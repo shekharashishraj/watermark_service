@@ -168,7 +168,75 @@ const FeatureItem = styled.div`
   }
 `;
 
-function DownloadSection({ outputFile, onDownload, onReset }) {
+function DownloadSection({ outputFile, onDownload, onReset, isCompact = false }) {
+  if (isCompact) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '8px', 
+          color: '#38a169',
+          fontSize: '0.9rem',
+          fontWeight: '600'
+        }}>
+          <CheckCircle size={16} />
+          Watermarks Applied!
+        </div>
+        
+        <div style={{
+          background: '#f7fafc',
+          padding: '12px',
+          borderRadius: '8px',
+          border: '1px solid #e2e8f0'
+        }}>
+          <div style={{ 
+            fontSize: '0.8rem', 
+            color: '#4a5568', 
+            marginBottom: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}>
+            <FileText size={14} />
+            {outputFile}
+          </div>
+          
+          <Button
+            className="primary"
+            onClick={onDownload}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            style={{ 
+              width: '100%', 
+              fontSize: '0.9rem', 
+              padding: '10px 16px',
+              marginBottom: '8px'
+            }}
+          >
+            <Download size={14} />
+            Download PDF
+          </Button>
+          
+          <Button
+            className="secondary"
+            onClick={onReset}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            style={{ 
+              width: '100%', 
+              fontSize: '0.8rem', 
+              padding: '8px 14px'
+            }}
+          >
+            <RotateCcw size={14} />
+            Process New File
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <DownloadContainer>
       <SuccessMessage>

@@ -27,6 +27,74 @@ class PDFWatermarker:
         hex_color = hex_color.lstrip('#')
         return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
     
+    def wrap_text(self, text, max_width, font_name, font_size):
+        """Wrap text to fit within specified width"""
+        words = text.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            test_width = self._get_text_width(test_line, font_name, font_size)
+            
+            if test_width <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                    current_line = [word]
+                else:
+                    # Single word is too long, break it
+                    lines.append(word)
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return lines
+    
+    def _get_text_width(self, text, font_name, font_size):
+        """Get text width using a temporary canvas"""
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+        temp_file.close()
+        temp_canvas = canvas.Canvas(temp_file.name)
+        temp_canvas.setFont(font_name, font_size)
+        width = temp_canvas.stringWidth(text, font_name, font_size)
+        # Clean up temporary file
+        try:
+            os.unlink(temp_file.name)
+        except:
+            pass
+        return width
+    
+    def calculate_optimal_font_size(self, text, max_width, max_height, font_name, initial_font_size=24):
+        """Calculate optimal font size to fit text within bounds"""
+        font_size = initial_font_size
+        
+        # Try to find the largest font size that fits
+        while font_size > 8:  # Minimum font size
+            # Check if text fits in width
+            text_width = self._get_text_width(text, font_name, font_size)
+            
+            if text_width <= max_width:
+                # Check if text fits in height (single line)
+                if font_size <= max_height:
+                    return font_size
+                else:
+                    font_size -= 1
+            else:
+                # Text is too wide, try wrapping
+                wrapped_lines = self.wrap_text(text, max_width, font_name, font_size)
+                total_height = len(wrapped_lines) * font_size
+                
+                if total_height <= max_height:
+                    return font_size, wrapped_lines
+                else:
+                    font_size -= 1
+        
+        # If we get here, use minimum font size and wrap
+        wrapped_lines = self.wrap_text(text, max_width, font_name, 8)
+        return 8, wrapped_lines
+    
     def create_watermark_pdf(self, text, position, font_size, color, opacity, rotation, page_width, page_height):
         """Create a watermark PDF with the specified text and properties"""
         # Create temporary file for watermark
@@ -43,9 +111,6 @@ class PDFWatermarker:
         rgb_color = self.hex_to_rgb(color)
         c.setFillColorRGB(*rgb_color)
         
-        # Set font and size
-        c.setFont("Helvetica-Bold", font_size)
-        
         # Calculate text position
         if position in self.supported_positions:
             x, y = self.supported_positions[position]
@@ -61,15 +126,70 @@ class PDFWatermarker:
             except:
                 x, y = 300, 400  # Default to center
         
-        # Apply rotation
+        # Calculate available space for text (with margins)
+        margin = 20
+        available_width = page_width - 2 * margin
+        available_height = page_height - 2 * margin
+        
+        # Calculate optimal font size and text wrapping
+        font_name = "Helvetica-Bold"
+        optimal_result = self.calculate_optimal_font_size(text, available_width, available_height, font_name, font_size)
+        
+        if isinstance(optimal_result, tuple):
+            # Text needs to be wrapped
+            adjusted_font_size, wrapped_lines = optimal_result
+        else:
+            # Text fits in single line
+            adjusted_font_size = optimal_result
+            wrapped_lines = [text]
+        
+        # Set font with adjusted size
+        c.setFont(font_name, adjusted_font_size)
+        
+        # Calculate final text dimensions
+        if len(wrapped_lines) == 1:
+            text_width = c.stringWidth(wrapped_lines[0], font_name, adjusted_font_size)
+            text_height = adjusted_font_size
+        else:
+            # For wrapped text, calculate total width and height
+            text_width = max(c.stringWidth(line, font_name, adjusted_font_size) for line in wrapped_lines)
+            text_height = len(wrapped_lines) * adjusted_font_size
+        
+        # Adjust position to center the text within available space
+        if position in self.supported_positions:
+            # For preset positions, adjust to ensure text fits
+            if x + text_width > page_width - margin:
+                x = page_width - text_width - margin
+            if y + text_height > page_height - margin:
+                y = page_height - text_height - margin
+            if x < margin:
+                x = margin
+            if y < margin:
+                y = margin
+        
+        # Draw the text (single line or wrapped)
         if rotation != 0:
             c.saveState()
             c.translate(x, y)
             c.rotate(rotation)
-            c.drawString(0, 0, text)
+            
+            if len(wrapped_lines) == 1:
+                c.drawString(0, 0, wrapped_lines[0])
+            else:
+                # Draw wrapped lines
+                for i, line in enumerate(wrapped_lines):
+                    line_y = -i * adjusted_font_size  # Negative because PDF coordinates are inverted
+                    c.drawString(0, line_y, line)
+            
             c.restoreState()
         else:
-            c.drawString(x, y, text)
+            if len(wrapped_lines) == 1:
+                c.drawString(x, y, wrapped_lines[0])
+            else:
+                # Draw wrapped lines
+                for i, line in enumerate(wrapped_lines):
+                    line_y = y - i * adjusted_font_size  # Subtract because we're drawing from top to bottom
+                    c.drawString(x, line_y, line)
         
         c.save()
         return watermark_file.name
@@ -100,9 +220,6 @@ class PDFWatermarker:
             rgb_color = self.hex_to_rgb(color)
             c.setFillColorRGB(*rgb_color)
             
-            # Set font and size
-            c.setFont("Helvetica-Bold", font_size)
-            
             # Calculate text position
             if position in self.supported_positions:
                 x, y = self.supported_positions[position]
@@ -122,16 +239,74 @@ class PDFWatermarker:
                     x, y = 300, 400  # Default to center
                     print(f"Default position: x={x}, y={y}")  # Debug print
             
-            # Apply rotation
-            print(f"Drawing watermark '{text}' at position ({x}, {y}) with rotation {rotation}")  # Debug print
+            # Calculate available space for text (with margins)
+            margin = 20
+            available_width = page_width - 2 * margin
+            available_height = page_height - 2 * margin
+            
+            # Calculate optimal font size and text wrapping
+            font_name = "Helvetica-Bold"
+            optimal_result = self.calculate_optimal_font_size(text, available_width, available_height, font_name, font_size)
+            
+            if isinstance(optimal_result, tuple):
+                # Text needs to be wrapped
+                adjusted_font_size, wrapped_lines = optimal_result
+                print(f"Text wrapped into {len(wrapped_lines)} lines with font size {adjusted_font_size}")
+            else:
+                # Text fits in single line
+                adjusted_font_size = optimal_result
+                wrapped_lines = [text]
+                print(f"Text fits in single line with font size {adjusted_font_size}")
+            
+            # Set font with adjusted size
+            c.setFont(font_name, adjusted_font_size)
+            
+            # Calculate final text dimensions
+            if len(wrapped_lines) == 1:
+                text_width = c.stringWidth(wrapped_lines[0], font_name, adjusted_font_size)
+                text_height = adjusted_font_size
+            else:
+                # For wrapped text, calculate total width and height
+                text_width = max(c.stringWidth(line, font_name, adjusted_font_size) for line in wrapped_lines)
+                text_height = len(wrapped_lines) * adjusted_font_size
+            
+            # Adjust position to center the text within available space
+            if position in self.supported_positions:
+                # For preset positions, adjust to ensure text fits
+                if x + text_width > page_width - margin:
+                    x = page_width - text_width - margin
+                if y + text_height > page_height - margin:
+                    y = page_height - text_height - margin
+                if x < margin:
+                    x = margin
+                if y < margin:
+                    y = margin
+            
+            print(f"Final position: x={x}, y={y}, text_width={text_width}, text_height={text_height}, font_size={adjusted_font_size}")  # Debug print
+            
+            # Draw the text (single line or wrapped)
             if rotation != 0:
                 c.saveState()
                 c.translate(x, y)
                 c.rotate(rotation)
-                c.drawString(0, 0, text)
+                
+                if len(wrapped_lines) == 1:
+                    c.drawString(0, 0, wrapped_lines[0])
+                else:
+                    # Draw wrapped lines
+                    for i, line in enumerate(wrapped_lines):
+                        line_y = -i * adjusted_font_size  # Negative because PDF coordinates are inverted
+                        c.drawString(0, line_y, line)
+                
                 c.restoreState()
             else:
-                c.drawString(x, y, text)
+                if len(wrapped_lines) == 1:
+                    c.drawString(x, y, wrapped_lines[0])
+                else:
+                    # Draw wrapped lines
+                    for i, line in enumerate(wrapped_lines):
+                        line_y = y - i * adjusted_font_size  # Subtract because we're drawing from top to bottom
+                        c.drawString(x, line_y, line)
         
         c.save()
         return watermark_file.name
@@ -175,6 +350,7 @@ class PDFWatermarker:
                 - color (str): Hex color code
                 - opacity (float): Opacity (0.0 to 1.0)
                 - rotation (int): Rotation angle in degrees
+                - target_pages (list): List of page numbers (1-indexed) or 'all' for all pages
         """
         try:
             # Read input PDF
@@ -185,33 +361,67 @@ class PDFWatermarker:
             first_page = reader.pages[0]
             page_width = float(first_page.mediabox.width)
             page_height = float(first_page.mediabox.height)
+            total_pages = len(reader.pages)
             
-            # Create combined watermark PDF with all watermarks
-            combined_watermark_path = self.create_multiple_watermarks_pdf(
-                watermarks, page_width, page_height
-            )
+            print(f"PDF has {total_pages} pages")
             
-            # Read combined watermark PDF
-            watermark_reader = PdfReader(combined_watermark_path)
-            watermark_page = watermark_reader.pages[0]
+            # Group watermarks by target pages
+            page_watermarks = {}  # page_num -> list of watermarks
             
-            # Apply watermark to all pages
-            for page in reader.pages:
-                # Merge watermark with page
-                page.merge_page(watermark_page)
+            for watermark in watermarks:
+                target_pages = watermark.get('target_pages', [1])  # Default to first page only
+                
+                # Handle different target_pages formats
+                if target_pages == 'all':
+                    target_pages = list(range(1, total_pages + 1))
+                elif not isinstance(target_pages, list):
+                    target_pages = [1]  # Default fallback
+                
+                # Add watermark to each target page
+                for page_num in target_pages:
+                    if 1 <= page_num <= total_pages:  # Validate page number
+                        if page_num not in page_watermarks:
+                            page_watermarks[page_num] = []
+                        page_watermarks[page_num].append(watermark)
+                        print(f"Adding watermark '{watermark.get('text')}' to page {page_num}")
+            
+            # Process each page
+            for page_index in range(total_pages):
+                page_num = page_index + 1  # Convert to 1-indexed
+                page = reader.pages[page_index]
+                
+                # Check if this page has watermarks
+                if page_num in page_watermarks:
+                    # Create watermark PDF for this specific page
+                    combined_watermark_path = self.create_multiple_watermarks_pdf(
+                        page_watermarks[page_num], page_width, page_height
+                    )
+                    
+                    # Read combined watermark PDF
+                    watermark_reader = PdfReader(combined_watermark_path)
+                    watermark_page = watermark_reader.pages[0]
+                    
+                    # Merge watermark with page
+                    page.merge_page(watermark_page)
+                    
+                    # Clean up temporary watermark file
+                    os.unlink(combined_watermark_path)
+                    
+                    print(f"Applied {len(page_watermarks[page_num])} watermark(s) to page {page_num}")
+                else:
+                    print(f"No watermarks for page {page_num}")
+                
+                # Add page to writer (with or without watermarks)
                 writer.add_page(page)
             
             # Write output PDF
             with open(output_path, 'wb') as output_file:
                 writer.write(output_file)
             
-            # Clean up temporary watermark file
-            os.unlink(combined_watermark_path)
-            
             return True
             
         except Exception as e:
-            # Clean up temporary file if it exists
+            # Clean up temporary files if they exist
             if 'combined_watermark_path' in locals():
                 try:
                     os.unlink(combined_watermark_path)

@@ -7,6 +7,8 @@ Handles real-time watermark positioning via WebSockets
 import os
 import uuid
 import json
+import logging
+from datetime import datetime
 from flask import Flask, request, jsonify, send_file
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
@@ -15,11 +17,29 @@ from watermark_service import PDFWatermarker
 import tempfile
 import shutil
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(os.path.dirname(__file__), 'logs', 'app.log')),
+        logging.StreamHandler()
+    ]
+)
+
+# Create logger instances
+app_logger = logging.getLogger('watermark_app')
+websocket_logger = logging.getLogger('websocket')
+performance_logger = logging.getLogger('performance')
+
+# Create logs directory
+os.makedirs(os.path.join(os.path.dirname(__file__), 'logs'), exist_ok=True)
+
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['OUTPUT_FOLDER'] = 'outputs'
+app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
+app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'outputs')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Enable CORS for React frontend
@@ -43,16 +63,22 @@ active_sessions = {}
 @app.route('/api/health')
 def health_check():
     """Health check endpoint"""
+    app_logger.info('Health check requested')
     return jsonify({'status': 'healthy', 'message': 'PDF Watermark Service is running'})
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     """Upload PDF file"""
+    start_time = datetime.now()
+    app_logger.info('File upload request received')
+    
     if 'file' not in request.files:
+        app_logger.warning('Upload attempt without file part')
         return jsonify({'error': 'No file part'}), 400
     
     file = request.files['file']
     if file.filename == '':
+        app_logger.warning('Upload attempt with empty filename')
         return jsonify({'error': 'No selected file'}), 400
     
     if file and allowed_file(file.filename):
@@ -70,6 +96,10 @@ def upload_file():
             'room': f"session_{unique_id}"
         }
         
+        processing_time = (datetime.now() - start_time).total_seconds()
+        performance_logger.info(f'File upload completed in {processing_time:.3f}s - File: {filename}, Size: {os.path.getsize(file_path)} bytes')
+        app_logger.info(f'File uploaded successfully: {filename} (ID: {unique_id})')
+        
         return jsonify({
             'success': True,
             'file_id': unique_id,
@@ -77,6 +107,7 @@ def upload_file():
             'message': 'File uploaded successfully'
         })
     
+    app_logger.warning(f'Invalid file type attempted: {file.filename}')
     return jsonify({'error': 'Invalid file type'}), 400
 
 @app.route('/api/watermark', methods=['POST'])
@@ -148,6 +179,37 @@ def get_original_file(file_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/pdf-info/<file_id>')
+def get_pdf_info(file_id):
+    """Get PDF information including page count"""
+    try:
+        if file_id not in active_sessions:
+            return jsonify({'error': 'File not found'}), 404
+        
+        session = active_sessions[file_id]
+        file_path = session['file_path']
+        
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'File not found'}), 404
+        
+        # Create watermarker instance to get PDF info
+        watermarker = PDFWatermarker()
+        pdf_info = watermarker.get_pdf_info(file_path)
+        
+        app_logger.info(f'PDF info requested for {file_id}: {pdf_info["num_pages"]} pages')
+        
+        return jsonify({
+            'success': True,
+            'file_id': file_id,
+            'filename': session['filename'],
+            'num_pages': pdf_info['num_pages'],
+            'page_size': pdf_info['page_size']
+        })
+        
+    except Exception as e:
+        app_logger.error(f'Error getting PDF info for {file_id}: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/preview/<file_id>')
 def get_pdf_preview(file_id):
     """Get PDF preview as image for visual positioning"""
@@ -202,13 +264,13 @@ def cleanup_files():
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
-    print(f"Client connected: {request.sid}")
+    websocket_logger.info(f'Client connected: {request.sid}')
     emit('connected', {'message': 'Connected to watermark service'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
-    print(f"Client disconnected: {request.sid}")
+    websocket_logger.info(f'Client disconnected: {request.sid}')
 
 @socketio.on('join_session')
 def handle_join_session(data):
@@ -221,7 +283,7 @@ def handle_join_session(data):
             'file_id': file_id,
             'watermarks': active_sessions[file_id]['watermarks']
         })
-        print(f"Client {request.sid} joined session {file_id}")
+        websocket_logger.info(f'Client {request.sid} joined session {file_id}')
 
 @socketio.on('leave_session')
 def handle_leave_session(data):
@@ -255,7 +317,7 @@ def handle_update_position(data):
             'position': position
         }, room=room)
         
-        print(f"Updated position for watermark {watermark_id} in session {file_id}")
+        performance_logger.debug(f'Position update - Watermark: {watermark_id}, Session: {file_id}, Position: {position}')
 
 @socketio.on('add_watermark')
 def handle_add_watermark(data):
@@ -275,7 +337,7 @@ def handle_add_watermark(data):
             'watermark': watermark_data
         }, room=room)
         
-        print(f"Added watermark to session {file_id}")
+        websocket_logger.info(f'Added watermark to session {file_id}: {watermark_data.get("text", "N/A")}')
 
 @socketio.on('remove_watermark')
 def handle_remove_watermark(data):
@@ -295,7 +357,7 @@ def handle_remove_watermark(data):
             'watermark_id': watermark_id
         }, room=room)
         
-        print(f"Removed watermark {watermark_id} from session {file_id}")
+        websocket_logger.info(f'Removed watermark {watermark_id} from session {file_id}')
 
 @socketio.on('update_watermark_properties')
 def handle_update_properties(data):
@@ -320,10 +382,17 @@ def handle_update_properties(data):
             'properties': properties
         }, room=room)
         
-        print(f"Updated properties for watermark {watermark_id} in session {file_id}")
+        websocket_logger.info(f'Updated properties for watermark {watermark_id} in session {file_id}: {list(properties.keys())}')
 
 if __name__ == '__main__':
-    print("Starting PDF Watermark Backend Server...")
-    print("Backend Server running on: http://localhost:5001")
-    print("WebSocket support enabled for real-time positioning")
+    app_logger.info('=== PDF Watermark Backend Server Starting ===')
+    app_logger.info('Server configuration:')
+    app_logger.info('  - Host: 0.0.0.0:5001')
+    app_logger.info('  - WebSocket support: Enabled')
+    app_logger.info('  - CORS origins: http://localhost:3000')
+    app_logger.info('  - Max file size: 16MB')
+    app_logger.info('  - Upload folder: ' + app.config['UPLOAD_FOLDER'])
+    app_logger.info('  - Output folder: ' + app.config['OUTPUT_FOLDER'])
+    app_logger.info('=== Server Ready ===')
+    
     socketio.run(app, host='0.0.0.0', port=5001, debug=True)

@@ -1,7 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import styled from 'styled-components';
-import { Plus, X, Eye, Settings, Palette, Type, RotateCcw } from 'lucide-react';
+import { Plus, X, Eye, Settings, Type, FileText, CheckSquare } from 'lucide-react';
 import { ChromePicker } from 'react-color';
 
 const ConfigContainer = styled.div``;
@@ -73,14 +73,15 @@ const Button = styled(motion.button)`
 const WatermarksList = styled.div`
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: ${props => props.isCompact ? '12px' : '20px'};
+  padding: ${props => props.isCompact ? '24px' : '0'};
 `;
 
 const WatermarkCard = styled(motion.div)`
-  background: #f8fafc;
-  border: 2px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 25px;
+  background: ${props => props.isCompact ? 'white' : '#f8fafc'};
+  border: ${props => props.isCompact ? '1px solid #e2e8f0' : '2px solid #e2e8f0'};
+  border-radius: ${props => props.isCompact ? '8px' : '12px'};
+  padding: ${props => props.isCompact ? '16px' : '25px'};
   position: relative;
 
   &:hover {
@@ -92,16 +93,16 @@ const WatermarkHeader = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: ${props => props.isCompact ? '12px' : '20px'};
 `;
 
 const WatermarkTitle = styled.h3`
-  font-size: 1.2rem;
+  font-size: ${props => props.isCompact ? '1rem' : '1.2rem'};
   font-weight: 600;
   color: #1a202c;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 `;
 
 const RemoveButton = styled.button`
@@ -124,8 +125,8 @@ const RemoveButton = styled.button`
 
 const ConfigGrid = styled.div`
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
+  grid-template-columns: ${props => props.isCompact ? '1fr' : 'repeat(auto-fit, minmax(250px, 1fr))'};
+  gap: ${props => props.isCompact ? '12px' : '20px'};
 `;
 
 const ConfigGroup = styled.div`
@@ -235,12 +236,56 @@ const ColorPickerCover = styled.div`
   left: 0;
 `;
 
+const PageSelector = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+`;
+
+const PageOptions = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+`;
+
+const PageOption = styled.button`
+  padding: 8px 12px;
+  border: 2px solid ${props => props.selected ? '#667eea' : '#e2e8f0'};
+  border-radius: 6px;
+  background: ${props => props.selected ? '#667eea' : 'white'};
+  color: ${props => props.selected ? 'white' : '#4a5568'};
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+
+  &:hover {
+    border-color: #667eea;
+    background: ${props => props.selected ? '#5a67d8' : '#f7fafc'};
+  }
+
+  &.all-pages {
+    background: ${props => props.selected ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : 'white'};
+  }
+`;
+
+const PageInfo = styled.div`
+  font-size: 0.8rem;
+  color: #718096;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+`;
+
 const AddWatermarkSection = styled.div`
   text-align: center;
-  padding: 30px;
+  padding: ${props => props.isCompact ? '16px' : '30px'};
   border: 2px dashed #e2e8f0;
-  border-radius: 12px;
-  margin-top: 20px;
+  border-radius: ${props => props.isCompact ? '8px' : '12px'};
+  margin: ${props => props.isCompact ? '12px 24px 24px' : '20px 0 0'};
   transition: all 0.3s ease;
 
   &:hover {
@@ -255,7 +300,9 @@ function WatermarkConfig({
   onRemoveWatermark, 
   onUpdateProperty, 
   onApplyWatermarks,
-  onShowVisualPositioning 
+  onShowVisualPositioning,
+  pdfInfo = null,
+  isCompact = false
 }) {
   const [colorPickers, setColorPickers] = React.useState({});
 
@@ -270,46 +317,110 @@ function WatermarkConfig({
     onUpdateProperty(watermarkId, 'color', color.hex);
   };
 
+  const handlePageSelection = (watermarkId, pageSelection) => {
+    onUpdateProperty(watermarkId, 'target_pages', pageSelection);
+  };
+
+  const getSelectedPages = (watermark) => {
+    return watermark.target_pages || [1]; // Default to first page
+  };
+
+  const isPageSelected = (watermark, pageNum) => {
+    const selected = getSelectedPages(watermark);
+    return selected === 'all' || (Array.isArray(selected) && selected.includes(pageNum));
+  };
+
+  const togglePageSelection = (watermark, pageNum) => {
+    const selected = getSelectedPages(watermark);
+    
+    if (selected === 'all') {
+      // If 'all' is selected, switch to just this page
+      handlePageSelection(watermark.id, [pageNum]);
+    } else if (Array.isArray(selected)) {
+      if (selected.includes(pageNum)) {
+        // Remove this page from selection
+        const newSelection = selected.filter(p => p !== pageNum);
+        handlePageSelection(watermark.id, newSelection.length > 0 ? newSelection : [1]);
+      } else {
+        // Add this page to selection
+        handlePageSelection(watermark.id, [...selected, pageNum].sort());
+      }
+    }
+  };
+
+  const toggleAllPages = (watermark) => {
+    const selected = getSelectedPages(watermark);
+    if (selected === 'all') {
+      handlePageSelection(watermark.id, [1]); // Switch to first page only
+    } else {
+      handlePageSelection(watermark.id, 'all'); // Select all pages
+    }
+  };
+
   return (
     <ConfigContainer>
-      <Header>
-        <Title>
-          <Settings size={24} />
-          Watermark Configuration
-        </Title>
-        <ActionButtons>
-          <Button
-            className="secondary"
-            onClick={onShowVisualPositioning}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            <Eye size={16} />
-            Visual Positioning
-          </Button>
-          <Button
-            className="primary"
-            onClick={onApplyWatermarks}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            <Settings size={16} />
-            Apply Watermarks
-          </Button>
-        </ActionButtons>
-      </Header>
+      {!isCompact && (
+        <Header>
+          <Title>
+            <Settings size={24} />
+            Watermark Configuration
+          </Title>
+          <ActionButtons>
+            <Button
+              className="secondary"
+              onClick={onShowVisualPositioning}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              <Eye size={16} />
+              Visual Positioning
+            </Button>
+            <Button
+              className="primary"
+              onClick={onApplyWatermarks}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              <Settings size={16} />
+              Apply Watermarks
+            </Button>
+          </ActionButtons>
+        </Header>
+      )}
+      
+      {isCompact && (
+        <>
+          <div style={{ padding: '16px 24px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '600', fontSize: '0.9rem', color: '#4a5568', marginBottom: '12px' }}>
+              <Settings size={16} />
+              Watermark Settings
+            </div>
+            <Button
+              className="primary"
+              onClick={onApplyWatermarks}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              style={{ width: '100%', fontSize: '0.9rem', padding: '10px 16px' }}
+            >
+              <Settings size={14} />
+              Apply Watermarks
+            </Button>
+          </div>
+        </>
+      )}
 
-      <WatermarksList>
+      <WatermarksList isCompact={isCompact}>
         {watermarks.map((watermark, index) => (
           <WatermarkCard
             key={watermark.id}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
+            isCompact={isCompact}
           >
-            <WatermarkHeader>
-              <WatermarkTitle>
-                <Type size={20} />
+            <WatermarkHeader isCompact={isCompact}>
+              <WatermarkTitle isCompact={isCompact}>
+                <Type size={isCompact ? 16 : 20} />
                 Watermark {index + 1}
               </WatermarkTitle>
               {watermarks.length > 1 && (
@@ -317,12 +428,12 @@ function WatermarkConfig({
                   onClick={() => onRemoveWatermark(watermark.id)}
                   title="Remove watermark"
                 >
-                  <X size={16} />
+                  <X size={14} />
                 </RemoveButton>
               )}
             </WatermarkHeader>
 
-            <ConfigGrid>
+            <ConfigGrid isCompact={isCompact}>
               <ConfigGroup>
                 <Label>Watermark Text</Label>
                 <Input
@@ -402,19 +513,51 @@ function WatermarkConfig({
                   <RangeValue>{watermark.rotation}°</RangeValue>
                 </RangeContainer>
               </ConfigGroup>
+
+              {pdfInfo && pdfInfo.num_pages > 1 && (
+                <ConfigGroup style={{ gridColumn: 'span 2' }}>
+                  <Label>Target Pages</Label>
+                  <PageSelector>
+                    <PageInfo>
+                      <FileText size={14} />
+                      PDF has {pdfInfo.num_pages} pages
+                    </PageInfo>
+                    <PageOptions>
+                      <PageOption
+                        className="all-pages"
+                        selected={getSelectedPages(watermark) === 'all'}
+                        onClick={() => toggleAllPages(watermark)}
+                      >
+                        <CheckSquare size={14} />
+                        All Pages
+                      </PageOption>
+                      {Array.from({ length: pdfInfo.num_pages }, (_, i) => i + 1).map(pageNum => (
+                        <PageOption
+                          key={pageNum}
+                          selected={isPageSelected(watermark, pageNum)}
+                          onClick={() => togglePageSelection(watermark, pageNum)}
+                        >
+                          Page {pageNum}
+                        </PageOption>
+                      ))}
+                    </PageOptions>
+                  </PageSelector>
+                </ConfigGroup>
+              )}
             </ConfigGrid>
           </WatermarkCard>
         ))}
       </WatermarksList>
 
-      <AddWatermarkSection>
+      <AddWatermarkSection isCompact={isCompact}>
         <Button
           className="secondary"
           onClick={onAddWatermark}
-          whileHover={{ scale: 1.05 }}
+          whileHover={{ scale: isCompact ? 1.02 : 1.05 }}
           whileTap={{ scale: 0.95 }}
+          style={isCompact ? { width: '100%', fontSize: '0.9rem', padding: '10px 16px' } : {}}
         >
-          <Plus size={20} />
+          <Plus size={isCompact ? 16 : 20} />
           Add Another Watermark
         </Button>
       </AddWatermarkSection>

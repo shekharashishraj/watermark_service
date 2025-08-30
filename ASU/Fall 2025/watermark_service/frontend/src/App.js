@@ -17,69 +17,120 @@ const API_BASE_URL = 'http://localhost:5001/api';
 const WS_URL = 'http://localhost:5001';
 
 const AppContainer = styled.div`
-  min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 20px;
+  height: 100vh;
+  background: #f8fafc;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  display: flex;
+  overflow: hidden;
 `;
 
-const Header = styled.header`
-  text-align: center;
+const Sidebar = styled(motion.aside)`
+  width: 420px;
+  background: white;
+  border-right: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+`;
+
+const SidebarHeader = styled.div`
+  padding: 24px;
+  border-bottom: 1px solid #e2e8f0;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
-  margin-bottom: 40px;
 `;
 
 const Title = styled.h1`
-  font-size: 2.5rem;
+  font-size: 1.5rem;
   font-weight: 700;
-  margin-bottom: 10px;
-  text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  margin: 0 0 8px 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 15px;
+  gap: 12px;
 `;
 
 const Subtitle = styled.p`
-  font-size: 1.1rem;
+  font-size: 0.9rem;
   opacity: 0.9;
+  margin: 0 0 12px 0;
   font-weight: 300;
-  margin-bottom: 15px;
 `;
 
 const ConnectionStatus = styled.div`
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 8px;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   font-weight: 500;
-  padding: 8px 16px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.1);
+  padding: 6px 12px;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.15);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.2);
   width: fit-content;
-  margin: 0 auto;
 `;
 
-const MainContent = styled.main`
-  max-width: 1200px;
-  margin: 0 auto;
+const SidebarContent = styled.div`
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
 `;
 
-const Card = styled(motion.div)`
+const MainPanel = styled.main`
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #f8fafc;
+  overflow: hidden;
+`;
+
+const PanelHeader = styled.div`
+  padding: 16px 24px;
   background: white;
-  border-radius: 16px;
-  padding: 30px;
-  margin-bottom: 30px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: between;
+  align-items: center;
+  min-height: 60px;
+`;
 
-  &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+const PanelTitle = styled.h2`
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #1a202c;
+  margin: 0;
+`;
+
+const PreviewContainer = styled.div`
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  background: #f1f5f9;
+`;
+
+const Section = styled.div`
+  border-bottom: 1px solid #e2e8f0;
+  
+  &:last-child {
+    border-bottom: none;
   }
+`;
+
+const SectionHeader = styled.div`
+  padding: 16px 24px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #4a5568;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const SectionContent = styled.div`
+  padding: 24px;
 `;
 
 const LoadingOverlay = styled(motion.div)`
@@ -124,8 +175,8 @@ function App() {
   const [watermarkCounter, setWatermarkCounter] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('Processing...');
-  const [showVisualPositioning, setShowVisualPositioning] = useState(false);
   const [outputFile, setOutputFile] = useState(null);
+  const [pdfInfo, setPdfInfo] = useState(null);
 
   // Initialize WebSocket connection
   useEffect(() => {
@@ -308,97 +359,139 @@ function App() {
     <AppContainer>
       <Toaster position="top-right" />
       
-      <Header>
-        <Title>
-          <FileText size={40} />
-          PDF Watermark Service
-        </Title>
-        <Subtitle>
-          Professional PDF watermarking with real-time drag-and-drop positioning
-        </Subtitle>
-        <ConnectionStatus>
-          {isConnected ? <Wifi size={16} /> : <WifiOff size={16} />}
-          <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
-        </ConnectionStatus>
-      </Header>
+      <Sidebar
+        initial={{ x: -420 }}
+        animate={{ x: 0 }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
+      >
+        <SidebarHeader>
+          <Title>
+            <FileText size={24} />
+            Watermark Studio
+          </Title>
+          <Subtitle>
+            Professional PDF watermarking tool
+          </Subtitle>
+          <ConnectionStatus>
+            {isConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
+            <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
+          </ConnectionStatus>
+        </SidebarHeader>
 
-      <MainContent>
-        <AnimatePresence>
+        <SidebarContent>
           {!currentFileId && (
-            <Card
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-            >
-              <FileUpload
-                onFileUploaded={(fileId, fileName) => {
-                  setCurrentFileId(fileId);
-                  if (socket && isConnected) {
-                    socket.emit('join_session', { file_id: fileId });
-                  }
-                }}
-                apiBaseUrl={API_BASE_URL}
-                showLoading={showLoading}
-                hideLoading={hideLoading}
-              />
-            </Card>
+            <Section>
+              <SectionHeader>
+                <FileText size={16} />
+                Upload Document
+              </SectionHeader>
+              <SectionContent>
+                <FileUpload
+                  onFileUploaded={async (fileId, fileName) => {
+                    setCurrentFileId(fileId);
+                    
+                    // Fetch PDF information
+                    try {
+                      const response = await fetch(`${API_BASE_URL}/pdf-info/${fileId}`);
+                      if (response.ok) {
+                        const pdfData = await response.json();
+                        setPdfInfo(pdfData);
+                        console.log('PDF Info:', pdfData);
+                      }
+                    } catch (error) {
+                      console.error('Failed to fetch PDF info:', error);
+                    }
+                    
+                    if (socket && isConnected) {
+                      socket.emit('join_session', { file_id: fileId });
+                    }
+                  }}
+                  apiBaseUrl={API_BASE_URL}
+                  showLoading={showLoading}
+                  hideLoading={hideLoading}
+                />
+              </SectionContent>
+            </Section>
           )}
 
           {currentFileId && (
             <>
-              <Card
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-              >
+              <Section>
                 <WatermarkConfig
                   watermarks={watermarks}
                   onAddWatermark={addWatermark}
                   onRemoveWatermark={removeWatermark}
                   onUpdateProperty={updateWatermarkProperty}
                   onApplyWatermarks={applyWatermarks}
-                  onShowVisualPositioning={() => setShowVisualPositioning(true)}
+                  onShowVisualPositioning={() => {}}
+                  pdfInfo={pdfInfo}
+                  isCompact={true}
                 />
-              </Card>
-
-              {showVisualPositioning && (
-                <Card
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                >
-                  <VisualPositioning
-                    watermarks={watermarks}
-                    onUpdateProperty={updateWatermarkProperty}
-                    onRemoveWatermark={removeWatermark}
-                    onClose={() => setShowVisualPositioning(false)}
-                    currentFileId={currentFileId}
-                    apiBaseUrl={API_BASE_URL}
-                  />
-                </Card>
-              )}
+              </Section>
 
               {outputFile && (
-                <Card
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                >
-                  <DownloadSection
-                    outputFile={outputFile}
-                    onDownload={downloadFile}
-                    onReset={() => {
-                      setCurrentFileId(null);
-                      setWatermarks([]);
-                      setWatermarkCounter(0);
-                      setOutputFile(null);
-                      setShowVisualPositioning(false);
-                      cleanupFiles();
-                    }}
-                  />
-                </Card>
+                <Section>
+                  <SectionHeader>
+                    <FileText size={16} />
+                    Download Result
+                  </SectionHeader>
+                  <SectionContent>
+                    <DownloadSection
+                      outputFile={outputFile}
+                      onDownload={downloadFile}
+                      onReset={() => {
+                        setCurrentFileId(null);
+                        setWatermarks([]);
+                        setWatermarkCounter(0);
+                        setOutputFile(null);
+                        cleanupFiles();
+                      }}
+                      isCompact={true}
+                    />
+                  </SectionContent>
+                </Section>
               )}
             </>
           )}
-        </AnimatePresence>
-      </MainContent>
+        </SidebarContent>
+      </Sidebar>
+
+      <MainPanel>
+        {currentFileId ? (
+          <>
+            <PanelHeader>
+              <PanelTitle>Document Preview & Watermark Positioning</PanelTitle>
+            </PanelHeader>
+            <PreviewContainer>
+              <VisualPositioning
+                watermarks={watermarks}
+                onUpdateProperty={updateWatermarkProperty}
+                onRemoveWatermark={removeWatermark}
+                onClose={() => {}}
+                currentFileId={currentFileId}
+                apiBaseUrl={API_BASE_URL}
+                pdfInfo={pdfInfo}
+                isIntegrated={true}
+              />
+            </PreviewContainer>
+          </>
+        ) : (
+          <div style={{ 
+            flex: 1, 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            color: '#718096',
+            fontSize: '1.1rem',
+            textAlign: 'center'
+          }}>
+            <div>
+              <FileText size={64} style={{ marginBottom: '16px', opacity: 0.5 }} />
+              <div>Upload a PDF document to begin watermarking</div>
+            </div>
+          </div>
+        )}
+      </MainPanel>
 
       <AnimatePresence>
         {isLoading && (

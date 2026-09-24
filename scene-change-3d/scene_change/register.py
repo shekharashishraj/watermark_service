@@ -6,9 +6,10 @@
    FFTs for every candidate yaw; the floor height fixes z.
 2. Robust point-to-plane ICP against the baseline Gaussians refines all 6 DoF.
    Changed objects are outliers and are down-weighted.
-3. Drift correction: the walkthrough is split into short chunks that are each
-   re-aligned; well-conditioned corrections are interpolated per frame and kept
-   only where they improve the local fit.
+3. Drift correction: the walkthrough is split into short chunks that are re-aligned
+   in walking order, each starting from the previous chunk's correction; the
+   corrections are interpolated per frame and kept only where they improve the
+   local fit.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from scipy import ndimage
 from scipy.spatial import cKDTree
 
 from .gaussians import frame_points
-from .geometry import make_pose, rot_z, so3_exp, so3_log, voxel_keys
+from .geometry import invert_pose, make_pose, rot_z, so3_exp, so3_log, voxel_keys
 from .model import BaselineModel
 from .session import Session
 
@@ -287,6 +288,7 @@ def localize(model: BaselineModel, session: Session, chunk: int = 20, refine_chu
     stats = {"chunks": 0, "accepted": 0, "mean_shift_cm": 0.0, "max_shift_cm": 0.0, "reverted": False}
     if refine_chunks and len(session) > chunk:
         cands_c = []
+        prev = np.eye(4)        # running drift estimate, carried along the walk
         for s0 in range(0, len(session), chunk // 2):
             fr = list(range(s0, min(len(session), s0 + chunk)))
             if len(fr) < 6:
@@ -295,20 +297,30 @@ def localize(model: BaselineModel, session: Session, chunk: int = 20, refine_chu
             cP, cN, _ = session_cloud(session, frames=fr, stride=3, voxel=0.05, poses=poses)
             if len(cP) < 400:
                 continue
-            before = score_alignment(cP, cN, tree, dst_P, dst_N, np.eye(4))
-            res = icp(cP, cN, tree, dst_P, dst_N, np.eye(4), schedule=(0.12, 0.07, 0.04), iters=5, damping=1e-3)
+            # start from the previous chunk's correction so ICP only has to fix the new drift
+            score_global = score_alignment(cP, cN, tree, dst_P, dst_N, np.eye(4))
+            score_prev = score_alignment(cP, cN, tree, dst_P, dst_N, prev)
+            res = icp(cP, cN, tree, dst_P, dst_N, prev, schedule=(0.25, 0.12, 0.07, 0.04), iters=5, damping=1e-3)
             Ht = np.linalg.eigvalsh(res.hessian[3:, 3:])
             Hr = np.linalg.eigvalsh(res.hessian[:3, :3])
             cond_ok = Ht[0] > 0.04 * Ht[-1] and Hr[0] > 0.01 * Hr[-1]
-            shift = float(np.linalg.norm(res.T[:3, 3]))
-            ang = float(np.degrees(np.linalg.norm(so3_log(res.T[:3, :3]))))
-            if cond_ok and shift < 0.2 and ang < 3 and res.inlier_ratio >= before + 0.02:
-                cands_c.append((float(np.mean(fr)), res.T, shift))
+            inc = res.T @ invert_pose(prev)
+            shift = float(np.linalg.norm(inc[:3, 3]))
+            ang = float(np.degrees(np.linalg.norm(so3_log(inc[:3, :3]))))
+            # larger jumps need proportionally stronger evidence
+            need = score_global + 0.02 + 0.2 * max(0.0, shift - 0.15)
+            if (cond_ok and shift < 0.45 and ang < 6
+                    and res.inlier_ratio >= max(need, score_prev + 0.005)):
+                prev = res.T
+                cands_c.append((float(np.mean(fr)), prev, float(np.linalg.norm(prev[:3, 3]))))
+            elif score_prev >= score_global + 0.02:
+                # too little structure to refine here, but the carried correction still helps
+                cands_c.append((float(np.mean(fr)), prev, float(np.linalg.norm(prev[:3, 3]))))
         # drift is smooth: drop corrections that disagree with their neighbours
         kept = []
         for k, (cen, Tc, sh) in enumerate(cands_c):
             nb = [cands_c[j][1][:3, 3] for j in range(max(0, k - 2), min(len(cands_c), k + 3)) if j != k]
-            if nb and np.linalg.norm(Tc[:3, 3] - np.median(nb, axis=0)) > 0.06:
+            if nb and np.linalg.norm(Tc[:3, 3] - np.median(nb, axis=0)) > 0.08:
                 continue
             kept.append((cen, Tc, sh))
         if kept:

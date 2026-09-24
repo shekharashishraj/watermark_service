@@ -16,33 +16,40 @@ IoU and F1 average the 10 scenarios with changes; false alarms average all 15.
 
 | Method | Frame IoU | Frame F1 | False-alarm pixels | Frames/s (4 CPU cores) |
 |---|---|---|---|---|
-| This prototype, all flags | 0.608 | 0.725 | 0.27% | 5.5 |
-| This prototype, confirmed items only | 0.518 | 0.612 | 0.03% | |
+| This prototype, all flags | 0.609 | 0.728 | 0.20% | 5.5 |
+| This prototype, confirmed items only | 0.517 | 0.613 | 0.01% | |
 | 2D video comparison | 0.152 | 0.215 | 2.11% | 1.3 |
-| O-SCD as published | running | | | 0.26 |
+| O-SCD as published (1 of 10 scenes so far) | 0.140 | 0.222 | 24.45% | 0.19 |
 
 Object level, this prototype:
 
 | Scenario kind | Changed objects found | Confirmed false positives / visit | Wrong review flags / visit | Median pose error |
 |---|---|---|---|---|
-| mixed (5) | 95% | 1.2 | 6.2 | 1.7 cm |
-| partial (5) | 87% | 0.6 | 5.6 | 1.9 cm |
-| clean (5) | no changes | 0.0 | 7.8 | 1.5 cm |
+| mixed (5) | 95% | 0.4 | 5.6 | 1.7 cm |
+| partial (5) | 90% | 0.0 | 5.4 | 1.9 cm |
+| clean (5) | no changes | 0.0 | 7.6 | 1.5 cm |
 
 Every object the second walkthrough never saw is reported as not checked. Review flags
 are mostly restyle-only detections (colour changed, geometry did not), which always go
 to a person with before/after images; lamps switched on or off between visits cause
 most of the wrong ones.
 
-### Localization fix
+Missed changes are mostly small objects: a trash bin, a bottle, a toiletry item, a toy, a
+backpack, and a coffee stain in a half-panned room.
 
-The held-out scenes exposed walks whose drift grows to 25-30 cm partway through. Chunk
-re-alignment now runs in walking order, starting from the previous chunk's correction.
+### Fixes found on the held-out scenes
 
-| This prototype, held-out | Frame IoU | Frame F1 | False-alarm pixels | Confirmed false positives / visit |
-|---|---|---|---|---|
-| Before the fix | 0.550 | 0.659 | 2.10% | 3.3 |
-| After the fix | 0.608 | 0.725 | 0.27% | 0.6 |
+1. **Localization**: some walks drift 25-30 cm partway through. Chunk re-alignment now
+   runs in walking order, starting from the previous chunk's correction.
+2. **Silhouette edges**: Gaussians bleed a few pixels past door jambs and frame edges,
+   so rays grazing those edges looked like removed surfaces. See-through evidence within
+   a Gaussian's footprint of an observed depth edge no longer counts.
+
+| This prototype, held-out | Frame IoU | Frame F1 | False-alarm pixels | Recall | Confirmed false positives / visit |
+|---|---|---|---|---|---|
+| Before either fix | 0.550 | 0.659 | 2.10% | 91.1% | 3.3 |
+| Localization fix | 0.608 | 0.725 | 0.27% | 91.1% | 0.6 |
+| Both fixes | 0.609 | 0.728 | 0.20% | 92.5% | 0.13 |
 
 The worst scene, s002_mixed, went from F1 0.173 (median pose error 6.9 cm, 25 confirmed
 false positives) to 0.684 (1.3 cm, none).
@@ -52,6 +59,7 @@ false positives) to 0.684 (1.3 cm, none).
 | Configuration | Frame IoU | Frame F1 | False-alarm pixels | Median pose error |
 |---|---|---|---|---|
 | As published: own PnP poses, depth-fused reference render | 0.112 | 0.189 | 22.5% | 3.1 cm |
+| Own PnP poses, exposure matching | 0.151 | 0.242 | 17.7% | 3.1 cm |
 | Our localization poses | 0.112 | 0.190 | 22.5% | 1.5 cm |
 | True poses | 0.118 | 0.198 | 20.9% | 0 |
 | True poses, exposure matching | 0.160 | 0.253 | 15.8% | 0 |

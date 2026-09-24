@@ -32,6 +32,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
+from scipy import ndimage
 from scipy.spatial import cKDTree
 
 from .geometry import depth_edge_mask, invert_pose, voxel_keys, voxel_centers
@@ -247,6 +248,7 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
             continue
         ui, vi, zi = u[idx].astype(np.int64), v[idx].astype(np.int64), z[idx]
         edge = depth_edge_mask(session.depth[i], 0.06)
+        edge_dist = ndimage.distance_transform_edt(~edge)
         win = np.stack([depth[vi + dv, ui + du] for dv, du in offs], axis=1)
         wedge = np.stack([edge[vi + dv, ui + du] for dv, du in offs], axis=1)
         valid = win > 0
@@ -255,7 +257,11 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
         confirm = diff.min(1) <= tau
         solid = valid & ~wedge                      # depth-edge pixels are unreliable evidence of free space
         closest = np.where(valid, win, np.inf).min(1)
-        viol = (~confirm) & (solid.sum(1) >= 6) & (closest > zi + tau)
+        # a splat's footprint bleeds past silhouettes (door jambs, frame edges): rays grazing a
+        # depth edge within that footprint are not evidence that the surface is gone
+        foot = np.clip(np.round(0.55 * g.voxel * fx / zi), 0, 4)
+        near_sil = edge_dist[vi, ui] <= foot + 1
+        viol = (~confirm) & (solid.sum(1) >= 6) & (closest > zi + tau) & ~near_sil
         center = win[:, 4]
         seen = confirm | viol
         n_view[idx[seen | ((center > 0) & (center < zi - tau))]] += 1

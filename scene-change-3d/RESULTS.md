@@ -19,7 +19,20 @@ IoU and F1 average the 10 scenarios with changes; false alarms average all 15.
 | This prototype, all flags | 0.609 | 0.728 | 0.20% | 5.5 |
 | This prototype, confirmed items only | 0.517 | 0.613 | 0.01% | |
 | 2D video comparison | 0.152 | 0.215 | 2.11% | 1.3 |
-| O-SCD as published (1 of 10 scenes so far) | 0.140 | 0.222 | 24.45% | 0.19 |
+| O-SCD as published (10 scenes, see below) | 0.138 | 0.219 | 22.61% | 0.33 |
+
+O-SCD ran on the 10 `mixed` and `clean` scenarios only (about 9 minutes per scene on CPU,
+most of it in the SAM 2.1 encoder). On exactly those 10 scenes:
+
+| Method | Frame IoU | Frame F1 | False-alarm pixels | Frames/s |
+|---|---|---|---|---|
+| This prototype, all flags | 0.628 | 0.744 | 0.25% | 5.8 |
+| 2D video comparison | 0.162 | 0.224 | 2.08% | 1.3 |
+| O-SCD as published (own PnP poses, SAM 2.1) | 0.138 | 0.219 | 22.61% | 0.33 |
+
+O-SCD localised 100 to 160 frames per walk with PnP (median pose error 2.7 cm) and
+bridged the rest with odometry. Its false alarms stay between 15% and 28% of pixels on
+every scene, with or without changes.
 
 Object level, this prototype:
 

@@ -2,6 +2,7 @@
 
     python -m scene_change generate --seed 3 --kind mixed --out runs/s003_mixed
     python -m scene_change inspect runs/s003_mixed --out runs/s003_mixed/result [--oscd]
+    python -m scene_change export-oscd runs/s003_mixed --out runs/s003_mixed/oscd_data
 
 ``inspect`` builds the baseline from the scenario's first walkthrough, inspects the
 second one, and writes ``summary.json``, ``metrics.json`` (harness ground truth),
@@ -60,6 +61,17 @@ def _inspect(args):
           f"object recall {metrics['objects']['recall']}; report {out / 'report.html'}")
 
 
+def _export(args):
+    from .harness.oscd_export import export_oscd_dataset
+    from .harness.scenario import load_scenario
+    from .pipeline import build
+    sc = load_scenario(args.scenario)
+    model = build(sc["baseline"], rooms=sc["rooms"])
+    out = export_oscd_dataset(sc, model.gaussians, args.out)
+    print(f"wrote {out}; run the official code with --source_path {out}, then score "
+          f"<model_path>/renders/change_mask against {out / 'gt_change_masks'}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m scene_change", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -76,6 +88,10 @@ def main(argv=None):
     i.add_argument("--oscd", action="store_true", help="also run the O-SCD re-implementation")
     i.add_argument("--backbone", default="auto", help="O-SCD feature backbone: auto | sam2 | dense-sift | none")
     i.set_defaults(fn=_inspect)
+    e = sub.add_parser("export-oscd", help="write a scenario in the official O-SCD data layout")
+    e.add_argument("scenario")
+    e.add_argument("--out", required=True)
+    e.set_defaults(fn=_export)
     args = ap.parse_args(argv)
     args.fn(args)
 

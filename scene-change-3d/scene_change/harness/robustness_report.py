@@ -46,10 +46,10 @@ COLOR = {"ours": "#008c76", "oscd-online": "#eb6834", "oscd-offline": "#4a3aa7",
 MARKER = {"ours": "o", "oscd-online": "s", "oscd-offline": "^", "video2d": "D", "ours-confirmed": "v",
           "oscd-official-online": "s", "oscd-official-offline": "^", "mv3dcd-official": "o"}
 ONLINE_OFFLINE = (("oscd-online", "oscd-offline"), ("oscd-official-online", "oscd-official-offline"))
-STRESS_ORDER = ["blur", "dark", "bright", "relight", "coverage", "sparse", "compress"]
+STRESS_ORDER = ["blur", "dark", "bright", "relight", "depth", "coverage", "sparse", "compress"]
 STRESS_TITLE = {"blur": "Motion blur", "dark": "Underexposure", "bright": "Overexposure",
                 "relight": "Illumination change", "coverage": "Lost coverage", "sparse": "Fewer views",
-                "compress": "Map compression"}
+                "depth": "Depth degradation", "compress": "Map compression"}
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
 DROP = 0.20          # relative F1 drop that counts as failure
 T975 = {1: 12.71, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262}
@@ -319,7 +319,7 @@ def _xpos(stressor, levels):
 XLABEL = {"blur": "blur length (% of image width)", "dark": "exposure reduction (stops)",
           "bright": "exposure increase (stops)", "relight": "illumination change (x scenario's)",
           "coverage": "views removed in stretches (%)", "sparse": "views removed at random (%)",
-          "compress": "baseline Gaussian voxel size (cm)"}
+          "depth": "depth noise (x sensor), dropout 5x %", "compress": "baseline Gaussian voxel size (cm)"}
 
 
 def fig_curves(R: Records, key: str, ylabel: str, path: Path, scale: float = 1.0, methods=None):
@@ -475,6 +475,8 @@ def lv_label(stressor, lv):
         return "reference"
     if stressor == "compress":
         return f"{100 * lv:g} cm"
+    if stressor == "depth":
+        return f"x{lv:g}"
     if stressor == "blur":
         return f"{100 * lv:g}%"
     if stressor in ("dark", "bright"):
@@ -695,6 +697,33 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str, preamble: str | None =
                      f"{fmt(mean('ap'))} | {fmt(mean('best_t'), digits=2)} | {fmt(mean('fp_conf'), pct=True)} | "
                      f"{fmt(mean('fn_conf'), pct=True)} |")
     L.append("")
+
+    if "ours" in R.methods:
+        L.append("### Our per-detection scores\n")
+        L.append("Each detection carries a score in [0, 1]; below 0.55 it goes to review. Share of detections that "
+                 "match a real change, per score band, pooled over scenes: at the reference, and pooled over the "
+                 "most severe level of every stressor.\n")
+        pools = {"reference": [("none", 0.0)], "most severe": [(s_, worst_level(s_)) for s_ in R.stressors]}
+        rows = {}
+        for name, conds in pools.items():
+            sc_, ok_ = [], []
+            for s_, lv in conds:
+                for sd in R.seeds:
+                    r = R.get(sd, s_, lv, "ours")
+                    for d in (r or {}).get("detections") or []:
+                        sc_.append(d["score"])
+                        ok_.append(d["correct"])
+            rows[name] = cal.detection_reliability(sc_, ok_)
+        bands = [(0.0, 0.4), (0.4, 0.55), (0.55, 0.7), (0.7, 0.85), (0.85, 1.0)]
+        L.append("| Score band | " + " | ".join(f"{a:g}-{b:g}" for a, b in bands) + " | ECE |")
+        L.append("|---|" + "---|" * (len(bands) + 1))
+        for name, rep in rows.items():
+            cells = []
+            for a, b in bands:
+                bin_ = next((x for x in rep["bins"] if abs(x["lo"] - a) < 1e-6), None)
+                cells.append("-" if bin_ is None else f"{bin_['precision']:.2f} (n={bin_['n']})")
+            L.append(f"| {name} | " + " | ".join(cells) + f" | {fmt(rep['ece'])} |")
+        L.append("")
 
     # offline vs online
     for on_m, off_m in ONLINE_OFFLINE:

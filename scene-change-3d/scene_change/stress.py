@@ -14,6 +14,7 @@ Session-level helpers:
     blur_session(session, frac)         blur of ``frac`` x image width along each frame's
                                         apparent camera motion (from the device poses)
     exposure_session(session, ev)
+    depth_session(session, s)           depth noise of s x the sensor's and 5 s % dropout (RGB-D methods)
     drop_views(n, frac, mode)           frames kept after removing ``frac`` of them, either as
                                         contiguous segments (lost coverage) or uniformly
                                         (lower frame rate); nested across ``frac``
@@ -167,6 +168,22 @@ def exposure_session(session: Session, ev: float) -> Session:
     return _replace_rgb(session, rgb, f"exposure:{ev}")
 
 
+def depth_session(session: Session, severity: float, seed: int = 0) -> Session:
+    """Degraded depth: extra noise of ``severity`` x a phone depth sensor's (1.5 mm + 2.5 mm/m^2 z^2) and
+    ``5 severity`` % of pixels dropped, as from a worse or moving depth sensor. RGB is untouched."""
+    if severity <= 0:
+        return session
+    rng = np.random.default_rng([seed, int(round(100 * severity))])
+    z = session.depth.astype(np.float64)
+    valid = z > 0
+    zn = z + rng.normal(0.0, 1.0, z.shape) * severity * (0.0015 + 0.0025 * z * z)
+    drop = rng.random(z.shape) < min(0.6, 0.05 * severity)
+    zn[~valid | drop | (zn <= 0)] = 0.0
+    meta = dict(session.meta)
+    meta["stress"] = meta.get("stress", []) + [f"depth:{severity}"]
+    return Session(session.name, session.K, session.rgb, zn.astype(np.float32), session.poses, session.timestamps, meta)
+
+
 def drop_views(n: int, frac: float, mode: str = "segments", segments: int = 2, seed: int = 0) -> np.ndarray:
     """Sorted indices of the frames kept after removing ``round(frac * n)`` of ``n`` frames.
 
@@ -274,6 +291,7 @@ class Stressor:
     reference: float = 0.0          # severity of the reference condition
     reference_run: str = "none"     # "none": the reference is the unmodified run; "self": a run of this stressor
     target: str = "inspection"      # what is degraded: the inspection walkthrough or the baseline map
+    depth_only: bool = False        # only methods that read the walkthrough's depth are affected
 
 
 STRESSORS = {
@@ -291,6 +309,8 @@ STRESSORS = {
                          "contiguous stretches of the walkthrough removed (areas never filmed)"),
     "sparse": Stressor("sparse", (0.5, 0.75), "share of views removed",
                        "views removed uniformly at random (lower frame rate)"),
+    "depth": Stressor("depth", (1.0, 2.0, 4.0, 8.0), "extra depth noise (x sensor) and 5x% dropout",
+                      "noisier and missing depth, as from a worse or moving depth sensor", depth_only=True),
     "compress": Stressor("compress", (0.075, 0.10, 0.15, 0.20), "Gaussian voxel size (m)",
                          "coarser baseline map: fewer, larger Gaussians (lower capacity)", harness_only=True,
                          reference=0.05, target="baseline"),
@@ -311,6 +331,8 @@ def apply_stressor(name: str, level: float, session: Session, sc: dict | None = 
         return blur_session(session, level, seed=seed), np.arange(n)
     if name in ("dark", "bright", "exposure"):
         return exposure_session(session, level), np.arange(n)
+    if name == "depth":
+        return depth_session(session, level, seed=seed), np.arange(n)
     if name == "relight":
         if sc is None:
             raise ValueError("relight needs the harness scenario")

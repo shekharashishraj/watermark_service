@@ -313,9 +313,11 @@ def main(argv=None):
         for name in stressors:
             for sname, level in levels_of(name):
                 baseline_only = sname in STRESSORS and STRESSORS[sname].target == "baseline"
+                depth_only = sname in STRESSORS and STRESSORS[sname].depth_only
                 todo = [m for m in args.methods
                         if any((seed, args.kind, sname, level, v) not in done for v in VARIANTS[m])
-                        and not (baseline_only and m == "video2d")]      # the 2D method has no map
+                        and not (baseline_only and m == "video2d")       # the 2D method has no map
+                        and not (depth_only and m != "ours")]            # the others ignore the visit's depth
                 if not todo:
                     continue
                 if ctx is None:

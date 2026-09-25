@@ -45,9 +45,10 @@ COLOR = {"ours": "#2a78d6", "oscd-online": "#eb6834", "oscd-offline": "#1baf7a",
 MARKER = {"ours": "o", "oscd-online": "s", "oscd-offline": "^", "video2d": "D", "ours-confirmed": "v",
           "oscd-official-online": "s", "oscd-official-offline": "^", "mv3dcd-official": "o"}
 ONLINE_OFFLINE = (("oscd-online", "oscd-offline"), ("oscd-official-online", "oscd-official-offline"))
-STRESS_ORDER = ["blur", "dark", "bright", "relight", "coverage", "sparse"]
+STRESS_ORDER = ["blur", "dark", "bright", "relight", "coverage", "sparse", "compress"]
 STRESS_TITLE = {"blur": "Motion blur", "dark": "Underexposure", "bright": "Overexposure",
-                "relight": "Illumination change", "coverage": "Lost coverage", "sparse": "Fewer views"}
+                "relight": "Illumination change", "coverage": "Lost coverage", "sparse": "Fewer views",
+                "compress": "Map compression"}
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
 DROP = 0.20          # relative F1 drop that counts as failure
 T975 = {1: 12.71, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262}
@@ -74,10 +75,15 @@ def reference_level(stressor: str) -> float:
     return STRESSORS[stressor].reference if stressor in STRESSORS else 0.0
 
 
+def reference_is_none(stressor: str) -> bool:
+    """True when the stressor's reference level is the unmodified run (level "none")."""
+    return stressor not in STRESSORS or STRESSORS[stressor].reference_run == "none"
+
+
 def severity_levels(stressor: str) -> list[float]:
-    """Levels in increasing severity, the reference included (0 = unmodified walkthrough)."""
+    """Levels in increasing severity, the reference included."""
     lv = [float(v) for v in STRESSORS[stressor].levels]
-    return lv if stressor == "relight" else [0.0] + lv
+    return [float(STRESSORS[stressor].reference)] + lv if reference_is_none(stressor) else lv
 
 
 def frame_scores(pf: dict, idx, px_per_frame: float) -> dict:
@@ -86,7 +92,9 @@ def frame_scores(pf: dict, idx, px_per_frame: float) -> dict:
     iou = tp / np.maximum(tp + fp + fn, 1.0)
     f1 = 2 * tp / np.maximum(2 * tp + fp + fn, 1.0)
     return {"F1": float(f1[has].mean()) if has.any() else None, "IoU": float(iou[has].mean()) if has.any() else None,
-            "FA": float(fp[~has].sum() / (px_per_frame * (~has).sum())) if (~has).any() else None}
+            "FA": float(fp[~has].sum() / (px_per_frame * (~has).sum())) if (~has).any() else None,
+            "precision": float(tp.sum() / (tp.sum() + fp.sum())) if tp.sum() + fp.sum() > 0 else None,
+            "recall_px": float(tp.sum() / (tp.sum() + fn.sum())) if tp.sum() + fn.sum() > 0 else None}
 
 
 class Records:
@@ -105,7 +113,7 @@ class Records:
         self._common = {}
 
     def get(self, seed, stressor, level, method):
-        if stressor != "relight" and level == 0.0:
+        if stressor == "none" or (reference_is_none(stressor) and float(level) == reference_level(stressor)):
             return self.by.get((seed, "none", 0.0, method))
         return self.by.get((seed, stressor, float(level), method))
 
@@ -126,7 +134,9 @@ class Records:
         return self._common[key]
 
     def metrics(self, r: dict, stressor: str) -> dict:
-        out = {"F1": r["frames"]["F1"], "IoU": r["frames"]["IoU"], "FA": r["frames"]["false_alarm_rate"]}
+        out = {"F1": r["frames"]["F1"], "IoU": r["frames"]["IoU"], "FA": r["frames"]["false_alarm_rate"],
+               "precision": r["pixels"]["precision"] if r["pixels"]["pred_pixels"] else None,
+               "recall_px": r["pixels"]["recall"] if r["pixels"]["gt_pixels"] else None}
         if stressor in ("coverage", "sparse"):
             common = self.common_frames(r["seed"], stressor)
             if common is not None:
@@ -195,16 +205,18 @@ def boundary(R: Records, method: str, stressor: str, key: str = "F1", drop: floa
     ref = next((c for c in cv if c[0] == ref_lv), None)
     if ref is None or not ref[1]:
         return None
+    order = severity_levels(stressor)
+    beyond = set(order[order.index(ref_lv) + 1:])          # levels more severe than the reference
     fail = None
     for lv, m, lo, hi, n, vals in cv:
-        if (stressor == "relight" and lv <= ref_lv) or lv == ref_lv:
+        if lv not in beyond:
             continue
         d = paired(ref[5], vals)
         rel = m / ref[1] - 1.0
         if d is not None and rel <= -drop and (d[3] == 1 or d[2] < 0):
             fail = (lv, rel)
             break
-    pts = [c for c in cv if stressor != "relight" or c[0] >= ref_lv]
+    pts = [c for c in cv if c[0] == ref_lv or c[0] in beyond]
     knee = None
     for a, b in zip(pts[:-1], pts[1:]):
         step = b[1] - a[1]
@@ -260,6 +272,8 @@ def _style(ax, xlabel=None, ylabel=None):
 def _xpos(stressor, levels):
     if stressor == "dark":
         return [-v for v in levels]
+    if stressor == "compress":
+        return [100 * v for v in levels]
     if stressor in ("coverage", "sparse"):
         return [100 * v for v in levels]
     if stressor == "blur":
@@ -269,7 +283,8 @@ def _xpos(stressor, levels):
 
 XLABEL = {"blur": "blur length (% of image width)", "dark": "exposure reduction (stops)",
           "bright": "exposure increase (stops)", "relight": "illumination change (x scenario's)",
-          "coverage": "views removed in stretches (%)", "sparse": "views removed at random (%)"}
+          "coverage": "views removed in stretches (%)", "sparse": "views removed at random (%)",
+          "compress": "baseline Gaussian voxel size (cm)"}
 
 
 def fig_curves(R: Records, key: str, ylabel: str, path: Path, scale: float = 1.0, methods=None):
@@ -421,8 +436,10 @@ def fmt(v, pct=False, digits=3):
 
 
 def lv_label(stressor, lv):
-    if stressor != "relight" and lv == 0.0:
+    if stressor == "none" or (reference_is_none(stressor) and lv == reference_level(stressor)):
         return "reference"
+    if stressor == "compress":
+        return f"{100 * lv:g} cm"
     if stressor == "blur":
         return f"{100 * lv:g}%"
     if stressor in ("dark", "bright"):
@@ -434,7 +451,7 @@ def lv_label(stressor, lv):
     return f"{lv:g}"
 
 
-def build_report(R: Records, fig_dir: Path, rel_fig: str) -> tuple[str, dict]:
+def build_report(R: Records, fig_dir: Path, rel_fig: str, preamble: str | None = None) -> tuple[str, dict]:
     fig_dir.mkdir(parents=True, exist_ok=True)
     summary = {"seeds": R.seeds, "methods": R.methods, "stressors": R.stressors, "curves": {}, "boundaries": {}}
     L = []
@@ -451,6 +468,9 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str) -> tuple[str, dict]:
                  f"{', '.join(str(s) for s in R.seeds)} (`mixed`, 8 changes each), every second inspection frame. "
                  "The reference capture is never degraded; each stressor degrades the inspection walkthrough only, "
                  "and ground truth is unchanged by construction.\n")
+
+    if preamble:
+        L.append(preamble.strip() + "\n")
 
     # reference performance
     L.append("## Reference performance\n")
@@ -483,6 +503,34 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str) -> tuple[str, dict]:
     L.append("Bands are 95% intervals over scenes. Frame scores for lost coverage and fewer views use the frames "
              "every level kept.\n")
 
+    # false positives and misses
+    fig_curves(R, "precision", "pixel precision", fig_dir / "precision_vs_severity.png")
+    fig_curves(R, "recall_px", "pixel recall", fig_dir / "pixel_recall_vs_severity.png")
+    L.append("## False positives and misses\n")
+    L.append("Pixel precision falls when false positives grow; pixel recall falls when changes are missed.\n")
+    L.append(f"![Pixel precision against severity]({rel_fig}/precision_vs_severity.png)\n")
+    L.append(f"![Pixel recall against severity]({rel_fig}/pixel_recall_vs_severity.png)\n")
+    L.append("Where the false positives are, at the reference and at each stressor's most severe level: share of "
+             "false-positive pixels farther than 3 px from any real change (the rest hug real changes: boundary "
+             "and alignment errors), and share of change-free frames with a false alarm of at least 20 px.\n")
+    L.append("| Method | Condition | Pixel precision | Pixel recall | False positives away from changes | "
+             "Change-free frames flagged |")
+    L.append("|---|---|---|---|---|---|")
+    for m in R.methods:
+        conds = [("reference", "none", 0.0)] + [(f"{STRESS_TITLE[s]}, {lv_label(s, worst_level(s))}", s,
+                                                 worst_level(s)) for s in R.stressors]
+        for name, s, lv in conds:
+            vals = [R.metrics(R.get(sd, s, lv, m), s) for sd in R.seeds if R.get(sd, s, lv, m)]
+            if not vals:
+                continue
+
+            def mean(k):
+                c = ci([v.get(k) for v in vals])
+                return None if c is None else c[0]
+            L.append(f"| {LABEL[m]} | {name} | {fmt(mean('precision'))} | {fmt(mean('recall_px'))} | "
+                     f"{fmt(mean('fp_far_share'), pct=True)} | {fmt(mean('fa_frames'), pct=True)} |")
+    L.append("")
+
     # boundaries
     L.append("## Failure boundaries\n")
     L.append(f"First severity at which mean frame F1 falls at least {int(DROP * 100)}% below the reference, "
@@ -510,8 +558,7 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str) -> tuple[str, dict]:
     for s in R.stressors:
         L.append(f"### {STRESS_TITLE[s]} ({STRESSORS[s].description})\n")
         levels = severity_levels(s)
-        L.append("| Method | Metric | " + " | ".join(lv_label(s, lv) if not (lv == 0.0 and s != "relight") else "reference"
-                                                   for lv in levels) + " |")
+        L.append("| Method | Metric | " + " | ".join(lv_label(s, lv) for lv in levels) + " |")
         L.append("|---|---|" + "---|" * len(levels))
         for m in R.methods:
             for key, name, pct in (("F1", "frame F1", False), ("FA", "false alarms", True), ("ece", "ECE", False)):
@@ -622,10 +669,41 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str) -> tuple[str, dict]:
             L.append(f"| {100 * lv:g}% | {lost} | {flagged} ({fmt(flagged / lost if lost else None, pct=True)}) |")
         L.append("")
 
-    # errors by change type and size
-    L.append("## Which changes are missed\n")
     vols = sorted(c["volume"] for r in R.recs for c in r["changes"] if c.get("volume") is not None)
     med = float(np.median(vols)) if vols else 0.0
+
+    # compression: small against large changes
+    if "compress" in R.stressors:
+        L.append("## Map compression: do small changes fail first?\n")
+        L.append("The baseline map is fused at coarser voxel sizes (fewer, larger Gaussians); the inspection "
+                 "walkthrough is unchanged. Share of visible changes found, split at the median box volume "
+                 f"({med:.3f} m^3), and frame F1.\n")
+        L.append("| Method | Voxel | Gaussians | Small changes found | Large changes found | Frame F1 |")
+        L.append("|---|---|---|---|---|---|")
+        for m in R.methods:
+            if not any(R.get(sd, "compress", lv, m) for sd in R.seeds for lv in STRESSORS["compress"].levels):
+                continue
+            for lv in severity_levels("compress"):
+                small, large, gauss, f1 = [], [], [], []
+                for sd in R.seeds:
+                    r = R.get(sd, "compress", lv, m)
+                    if r is None:
+                        continue
+                    f1.append(r["frames"]["F1"])
+                    if r.get("gaussians"):
+                        gauss.append(r["gaussians"])
+                    for c in r["changes"]:
+                        if c["gt_px"] > 0 and c.get("volume") is not None:
+                            (small if c["volume"] < med else large).append(c["detected"])
+                if not f1:
+                    continue
+                L.append(f"| {LABEL[m]} | {100 * lv:g} cm | {int(np.mean(gauss)) if gauss else '-'} | "
+                         f"{fmt(float(np.mean(small)) if small else None, digits=2)} | "
+                         f"{fmt(float(np.mean(large)) if large else None, digits=2)} | {fmt(ci(f1)[0])} |")
+        L.append("")
+
+    # errors by change type and size
+    L.append("## Which changes are missed\n")
     L.append(f"Share of visible changes found, by type and size (small: box volume below the median, "
              f"{med:.3f} m^3), at the reference and pooled over the most severe level of every stressor.\n")
     groups = ["removed", "added", "moved", "appearance", "small", "large"]
@@ -657,6 +735,7 @@ def main(argv=None):
     ap.add_argument("--runs", default="runs/robust")
     ap.add_argument("--out", default="ROBUSTNESS.md")
     ap.add_argument("--figures", default="docs/robustness")
+    ap.add_argument("--preamble", default=None, help="Markdown inserted after the introduction (findings)")
     args = ap.parse_args(argv)
     R = Records(load_records(Path(args.runs)))
     if not R.recs:
@@ -667,7 +746,8 @@ def main(argv=None):
         rel = fig_dir.resolve().relative_to(out.resolve().parent)
     except ValueError:
         rel = fig_dir.resolve()
-    text, summary = build_report(R, fig_dir, rel.as_posix())
+    pre = Path(args.preamble).read_text() if args.preamble and Path(args.preamble).exists() else None
+    text, summary = build_report(R, fig_dir, rel.as_posix(), pre)
     out.write_text(text)
     (fig_dir / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
     print(f"wrote {out} and figures in {fig_dir} ({len(R.recs)} records, seeds {R.seeds})")

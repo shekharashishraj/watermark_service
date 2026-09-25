@@ -271,7 +271,9 @@ class Stressor:
     unit: str
     description: str
     harness_only: bool = False
-    reference: float = 0.0          # severity of the unmodified walkthrough
+    reference: float = 0.0          # severity of the reference condition
+    reference_run: str = "none"     # "none": the reference is the unmodified run; "self": a run of this stressor
+    target: str = "inspection"      # what is degraded: the inspection walkthrough or the baseline map
 
 
 STRESSORS = {
@@ -284,11 +286,14 @@ STRESSORS = {
     "relight": Stressor("relight", (0.0, 0.5, 1.0, 2.0, 3.0), "illumination change (x the scenario's)",
                         "room lights, lamps, white balance and exposure moved from the baseline visit's "
                         "lighting (0) past the scenario's inspection lighting (1)", harness_only=True,
-                        reference=1.0),
+                        reference=1.0, reference_run="self"),
     "coverage": Stressor("coverage", (0.2, 0.4, 0.6, 0.8), "share of views removed",
                          "contiguous stretches of the walkthrough removed (areas never filmed)"),
     "sparse": Stressor("sparse", (0.5, 0.75), "share of views removed",
                        "views removed uniformly at random (lower frame rate)"),
+    "compress": Stressor("compress", (0.075, 0.10, 0.15, 0.20), "Gaussian voxel size (m)",
+                         "coarser baseline map: fewer, larger Gaussians (lower capacity)", harness_only=True,
+                         reference=0.05, target="baseline"),
 }
 
 
@@ -300,7 +305,7 @@ def apply_stressor(name: str, level: float, session: Session, sc: dict | None = 
     ``relight``, which re-renders those frames).
     """
     n = len(session)
-    if name == "none":
+    if name == "none" or (name in STRESSORS and STRESSORS[name].target == "baseline"):
         return session, np.arange(n)
     if name == "blur":
         return blur_session(session, level, seed=seed), np.arange(n)

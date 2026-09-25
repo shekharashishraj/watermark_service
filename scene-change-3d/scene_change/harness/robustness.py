@@ -163,6 +163,13 @@ class SceneContext:
         self.T_wb = np.linalg.inv(np.asarray(self.sc["gt"]["T_baseline_world"]))
         self._oscd_index = None
         self._retrieval = None
+        self._models = {self.model.gaussians.voxel: self.model}
+
+    def model_for(self, voxel: float):
+        """Baseline model fused at another voxel size (map compression)."""
+        if voxel not in self._models:
+            self._models[voxel] = build(self.sc["baseline"], rooms=self.sc["rooms"], voxel=voxel)
+        return self._models[voxel]
 
     @property
     def oscd_index(self):
@@ -190,7 +197,9 @@ class SceneContext:
 # Methods
 # ----------------------------------------------------------------------------
 
-def run_methods(ctx: SceneContext, session, keep: np.ndarray, methods, encoder=None, cache_dir=None) -> list[dict]:
+def run_methods(ctx: SceneContext, session, keep: np.ndarray, methods, encoder=None, cache_dir=None,
+                model=None) -> list[dict]:
+    model = model or ctx.model
     arrays = subset_arrays(ctx.arrays, keep)
     gt = gt_masks(arrays, ctx.changes)
     cm = change_masks(arrays, ctx.changes)
@@ -208,18 +217,18 @@ def run_methods(ctx: SceneContext, session, keep: np.ndarray, methods, encoder=N
 
     def ours():
         t = time.time()
-        res = inspect(ctx.model, session)
+        res = inspect(model, session)
         secs = round(time.time() - t, 2)
-        vox = ctx.model.gaussians.voxel
+        vox = model.gaussians.voxel
         pred = predicted_masks(res, session, vox, include_review=True)
         pred_c = predicted_masks(res, session, vox, include_review=False)
         scores = predicted_scores(res, session, vox, include_review=True)
-        ev = evaluate_3d(ctx.view(keep, session), ctx.model, res)
+        ev = evaluate_3d(ctx.view(keep, session), model, res)
         regions = gt_regions(ctx.sc["scene"], ctx.sc["inspection_scene"], ctx.changes)
         hits = match_detections(res, regions, ctx.T_wb)
         dets = [{"score": ch.score, "review": ch.review, "type": ch.type, "correct": bool(hits.get(ch.id)),
                  "geometry": ch.geometry_score, "appearance": ch.appearance_score} for ch in res.changes]
-        flags = region_flags(res, ctx.model, ctx.changes, ctx.T_wb)
+        flags = region_flags(res, model, ctx.changes, ctx.T_wb)
         common = {"objects": ev["objects"], "unverified": ev["unverified"], "registration": ev["registration"],
                   "verdict": res.verdict, "seconds": secs, "fps": round(len(session) / max(secs, 1e-9), 2)}
         r_all = {"method": "ours", **score_variant(pred, scores, gt, cm, ctx.changes, 0.0), **common,
@@ -241,7 +250,7 @@ def run_methods(ctx: SceneContext, session, keep: np.ndarray, methods, encoder=N
 
     def oscd():
         t = time.time()
-        ro = run_oscd(ctx.model.gaussians, ctx.sc["baseline"], session, OSCDConfig(backbone="sam2"),
+        ro = run_oscd(model.gaussians, ctx.sc["baseline"], session, OSCDConfig(backbone="sam2"),
                       index=ctx.oscd_index, encoder=encoder, cache_dir=cache_dir)
         secs = round(time.time() - t, 2)
         reg = registration_errors(ro.poses, arrays["insp_poses_world"], ctx.T_wb)
@@ -302,8 +311,10 @@ def main(argv=None):
         cache = out / "featcache" / f"s{seed:03d}" if args.feature_cache else None
         for name in stressors:
             for sname, level in levels_of(name):
+                baseline_only = sname in STRESSORS and STRESSORS[sname].target == "baseline"
                 todo = [m for m in args.methods
-                        if any((seed, args.kind, sname, level, v) not in done for v in VARIANTS[m])]
+                        if any((seed, args.kind, sname, level, v) not in done for v in VARIANTS[m])
+                        and not (baseline_only and m == "video2d")]      # the 2D method has no map
                 if not todo:
                     continue
                 if ctx is None:
@@ -313,11 +324,14 @@ def main(argv=None):
                                                seed=args.stress_seed + seed)
                 stress_s = round(time.time() - t, 2)
                 cdir = cache if sname in ("none", "coverage", "sparse") else None
-                for r in run_methods(ctx, session, keep, todo, encoder, cache_dir=cdir):
+                model = ctx.model_for(level) if baseline_only else ctx.model
+                for r in run_methods(ctx, session, keep, todo, encoder, cache_dir=cdir, model=model):
                     r.update(seed=seed, kind=args.kind, stressor=sname, level=level, stride=args.stride,
                              n_frames=int(len(keep)), stress_s=stress_s)
                     if len(keep) < len(ctx.insp):
                         r["kept"] = keep.tolist()
+                    if baseline_only:
+                        r["gaussians"] = len(model.gaussians)
                     with open(res_file, "a") as f:
                         f.write(json.dumps(r, default=float) + "\n")
                     if "error" in r:

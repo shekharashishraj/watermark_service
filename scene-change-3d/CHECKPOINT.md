@@ -1,4 +1,4 @@
-# Checkpoint: robustness study (25 Sep 2026, 21:45 UTC)
+# Checkpoint: robustness study (25 Sep 2026, 22:00 UTC; all jobs stopped)
 
 Branch `claude/elegant-shannon-gjj5hd`, folder `scene-change-3d/`. The submitted proposal
 ("Robustness in 3D Scene Change Detection") asks how 3D change detectors hold up under
@@ -19,7 +19,7 @@ Overview page (private): https://claude.ai/artifact/N8soP8ZxWd3ggseDoVjDzC (vers
 | GPU kit: official O-SCD and MV3DCD on PASLCD, same stressors and scoring | `gpu/`, `scene_change/harness/paslcd.py` | done; tested on mock data only, never run on a GPU |
 | Sweeps: ours, ours confirmed-only, 2D (5 held-out scenes x 26 levels) | `results/robustness/results_fast.jsonl.gz` | **complete** (390 runs) |
 | Sweeps: depth noise, map compression (ours) | `results_depth`, `results_compress` | **complete** (80 runs) |
-| Sweeps: O-SCD online and refined (5 scenes x 30 levels) | `results_oscd`, `results_oscd2` | **84 of 150 levels** (scenes 0 and 3 complete, 1 and 4 partial, 2 not started) |
+| Sweeps: O-SCD online and refined (5 scenes x 30 levels) | `results_oscd`, `results_oscd2` | **96 of 150 levels**, stopped (scenes 0 and 3 complete, scene 1 at 26 of 30, scene 4 at 10 of 30, scene 2 not started) |
 | Depth safeguard (no all-clear from noisy depth), cut-off set on dev scenes | `detect.py` (`min_depth_agreement`) | done; held-out: wrong all-clears 6 -> 0, no false triggers (`docs/robustness/depth_gate.json`) |
 | Exposure safeguard (no restyle flood from bad exposure) | `detect.py` (`app_exposure_gate`) | done; held-out: -4 EV F1 0.18 -> 0.56, false alarms 39% -> 0.4% (`docs/robustness/exposure_gate.json`) |
 | Benchmark re-run with both safeguards | `results/robustness/benchmark_current_code.jsonl.gz`, note in `RESULTS.md` | same scores to 0.001 |
@@ -32,7 +32,7 @@ variant):
 | File | Contents |
 |---|---|
 | `results_fast` | ours, ours-confirmed and 2D, 5 scenes x 26 levels |
-| `results_oscd`, `results_oscd2` | O-SCD online and refined (two processes: scenes 0-2 and 3-4) |
+| `results_oscd`, `results_oscd2` | O-SCD online and refined (two processes: scenes 0-2 and 3-4), 96 of 150 levels |
 | `results_depth`, `results_compress` | ours under depth noise and map compression |
 | `results_ref` | ours at the reference, with self-reported depth agreement |
 | `robust_gate_*` | held-out depth-safeguard evaluation (mixed and change-free scenes) |
@@ -88,13 +88,13 @@ python -m scene_change.harness.robustness_report --runs runs/robust --out ROBUST
 #    build, then republish to the same artifact URL.
 ```
 
-If the O-SCD sweep in this session finishes before the container is reclaimed, its
-results are in `runs/robust/` and need gzipping into `results/robustness/` again.
+All jobs were stopped at this checkpoint; nothing is running. After step 3 finishes,
+gzip `runs/robust/results_oscd*.jsonl` into `results/robustness/` again and commit.
 
 ## Next
 
-1. Finish the O-SCD sweep (66 levels left), then finalise `findings.md`, `ROBUSTNESS.md`
-   and the overview page.
+1. Finish the O-SCD sweep (54 levels left, about 3.5 hours on 4 CPU cores), then finalise
+   `findings.md`, `ROBUSTNESS.md` and the overview page.
 2. Check the online error-accumulation reading: O-SCD with true poses under blur and a
    longer walk, to separate localisation failure from change-cue failure.
 3. On a GPU machine: `gpu/README.md` runs the authors' O-SCD and MV3DCD on PASLCD under

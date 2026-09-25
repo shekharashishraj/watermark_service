@@ -1,7 +1,7 @@
 > **Interim, 25 Sep 2026.** Our detector, its confirmed-only variant and the 2D video
-> comparison are complete on all 5 held-out scenes. O-SCD is partial: scenes 0 and 3
-> complete, scenes 1 and 4 in progress, scene 2 not started. O-SCD numbers below will
-> move. The main sweep evaluates our detector as it was before the two safeguards at the
+> comparison are complete on all 5 held-out scenes. O-SCD is partial (96 of 150 levels):
+> scenes 0 and 3 complete, scenes 1 and 4 partial, scene 2 not started. O-SCD numbers
+> below will move. The main sweep evaluates our detector as it was before the two safeguards at the
 > end of this summary.
 
 ## Findings so far

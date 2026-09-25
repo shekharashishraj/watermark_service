@@ -179,6 +179,23 @@ def predicted_masks(result, session, voxel, include_review=True):
     return masks
 
 
+def predicted_scores(result, session, voxel, include_review=True):
+    """Per-pixel change score: the highest score among detections whose projected support covers the pixel."""
+    scores = np.zeros(session.depth.shape, dtype=np.float16)
+    for ch in result.changes:
+        if ch.review and not include_review:
+            continue
+        pts = [p for p in (ch.points, ch.points_to) if p is not None]
+        if not pts:
+            continue
+        P = np.concatenate(pts)
+        for i in range(len(session)):
+            m = splat_points_mask(P, session.K, result.poses[i], session.depth[i], voxel)
+            if m.any():
+                scores[i][m] = np.maximum(scores[i][m], np.float16(ch.score))
+    return scores
+
+
 # ----------------------------------------------------------------------------
 # Metrics
 # ----------------------------------------------------------------------------

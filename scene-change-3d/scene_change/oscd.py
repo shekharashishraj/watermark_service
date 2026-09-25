@@ -415,6 +415,8 @@ class OSCDResult:
     timings: dict = field(default_factory=dict)
     backbone: str = "none"
     iterations: int = 0
+    scores: np.ndarray | None = None          # (N, H, W) float16 rendered change M behind ``masks``
+    scores_refined: np.ndarray | None = None  # (N, H, W) float16 rendered change M behind ``masks_refined``
 
 
 class _FeatureCache:
@@ -440,7 +442,9 @@ class _FeatureCache:
         self.seconds += time.time() - t
         self.calls += 1
         if key is not None:
-            np.save(self.dir / f"{self.encoder.name}_{key}.npy", e.astype(np.float16))
+            e = e.astype(np.float16)
+            np.save(self.dir / f"{self.encoder.name}_{key}.npy", e)
+            e = e.astype(np.float32)       # same values as a later cache hit
         return e
 
 
@@ -481,6 +485,7 @@ def run_oscd(reference: GaussianMap, ref_session: Session, session: Session, cfg
     usable = np.zeros(n, bool)
     inliers = np.zeros(n, int)
     masks = np.zeros((n, H, W), bool)
+    scores = np.zeros((n, H, W), np.float16)
     cands = np.zeros((n, H, W), np.float16)
     views: list[tuple[int, sparse.csr_matrix, np.ndarray]] = []
     losses = []
@@ -524,27 +529,32 @@ def run_oscd(reference: GaussianMap, ref_session: Session, session: Session, cfg
         for _ in range(cfg.iters_per_frame):
             k = int(rng.integers(0, len(views))) if rng.random() > cfg.p_current else len(views) - 1
             losses.append(field_.step(views[k][1], views[k][2]))
-        masks[i] = (field_.render(rend["weights"]) > cfg.threshold).reshape(H, W)
+        M = field_.render(rend["weights"]).reshape(H, W)
+        scores[i] = M
+        masks[i] = M > cfg.threshold
         t_opt += time.time() - t0
         if verbose and i % 25 == 0:
             print(f"frame {i}: loc={ok} inl={inliers[i]} loss={losses[-1]:.4f} mask={masks[i].mean():.3f}", flush=True)
 
-    refined = None
+    refined = scores_refined = None
     if cfg.refine_until and views:
         t0 = time.time()
         for _ in range(field_.t, cfg.refine_until):
             k = int(rng.integers(0, len(views)))
             losses.append(field_.step(views[k][1], views[k][2]))
         refined = np.zeros((n, H, W), bool)
+        scores_refined = np.zeros((n, H, W), np.float16)
         for i, Wv, _ in views:
-            refined[i] = (field_.render(Wv) > cfg.threshold).reshape(H, W)
+            M = field_.render(Wv).reshape(H, W)
+            scores_refined[i] = M
+            refined[i] = M > cfg.threshold
         t_opt += time.time() - t0
     timings = {"index_s": round(t_index, 2), "localize_s": round(t_loc, 2), "render_s": round(t_render, 2),
                "cues_s": round(t_cue, 2), "features_s": round(0.0 if feats is None else feats.seconds, 2),
                "optimize_s": round(t_opt, 2), "total_s": round(time.time() - t_all, 2), "frames": n,
                "fps": round(n / max(time.time() - t_all - t_index, 1e-9), 3)}
     return OSCDResult(masks, refined, est, localized, usable, inliers, field_.colors, cands, losses, timings,
-                      "none" if encoder is None else encoder.name, field_.t)
+                      "none" if encoder is None else encoder.name, field_.t, scores, scores_refined)
 
 
 # ----------------------------------------------------------------------------

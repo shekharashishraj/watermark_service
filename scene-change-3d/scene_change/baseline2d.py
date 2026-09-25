@@ -42,6 +42,7 @@ class Video2DResult:
     matched: np.ndarray                # (N,) index of the baseline frame used, -1 if none
     inliers: np.ndarray                # (N,)
     timings: dict = field(default_factory=dict)
+    scores: np.ndarray | None = None   # (N, H, W) float16: difference / (2 x threshold), clipped to [0, 1]
 
 
 def _affine_colour(src: np.ndarray, dst: np.ndarray, valid: np.ndarray) -> np.ndarray:
@@ -109,14 +110,22 @@ class _Retrieval:
         return best if best[2] >= cfg.min_inliers else (-1, None, best[2])
 
 
-def compare_videos(reference: Session, inspection: Session, cfg: Video2DConfig | None = None) -> Video2DResult:
+def build_retrieval(reference: Session, cfg: Video2DConfig | None = None) -> _Retrieval:
+    """Index of the baseline frames, reusable across inspections of the same baseline."""
+    return _Retrieval(reference, cfg or Video2DConfig())
+
+
+def compare_videos(reference: Session, inspection: Session, cfg: Video2DConfig | None = None,
+                   retrieval: _Retrieval | None = None) -> Video2DResult:
+    """Per-frame change masks; ``scores`` puts the frame's decision threshold at 0.5."""
     cfg = cfg or Video2DConfig()
     t0 = time.time()
-    ret = _Retrieval(reference, cfg)
+    ret = retrieval if retrieval is not None else _Retrieval(reference, cfg)
     t_index = time.time() - t0
     n = len(inspection)
     H, W = inspection.rgb.shape[1:3]
     masks = np.zeros((n, H, W), bool)
+    scores = np.zeros((n, H, W), np.float16)
     valid = np.zeros((n, H, W), bool)
     matched = np.full(n, -1)
     inliers = np.zeros(n, int)
@@ -138,6 +147,7 @@ def compare_videos(reference: Session, inspection: Session, cfg: Video2DConfig |
             cur = ndimage.gaussian_filter(cur, (cfg.blur_sigma, cfg.blur_sigma, 0))
         diff = np.abs(cur - ref).mean(axis=2)
         thr = max(cfg.abs_threshold, cfg.rel_threshold * float(np.median(diff[cov])) if cov.any() else 1.0)
+        scores[i] = np.where(cov, np.clip(0.5 * diff / thr, 0.0, 1.0), 0.0)
         m = (diff > thr) & cov
         m = ndimage.binary_opening(m, structure=kernel)
         lab, k = ndimage.label(m)
@@ -148,4 +158,4 @@ def compare_videos(reference: Session, inspection: Session, cfg: Video2DConfig |
     total = time.time() - t0
     return Video2DResult(masks, valid, matched, inliers,
                          {"index_s": round(t_index, 2), "total_s": round(total, 2), "frames": n,
-                          "fps": round(n / max(total - t_index, 1e-9), 2)})
+                          "fps": round(n / max(total - t_index, 1e-9), 2)}, scores)

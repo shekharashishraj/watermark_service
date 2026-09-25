@@ -341,9 +341,11 @@ def main(argv=None):
                         print(f"s{seed} {sname}={level} {r['method']}: ERROR {r['error']}", flush=True)
                         continue
                     fr, c = r["frames"], r.get("calibration") or {}
-                    print(f"s{seed} {sname}={level} {r['method']}: F1 {fr['F1']:.3f} IoU {fr['IoU']:.3f} "
-                          f"FA {fr['false_alarm_rate']:.4f} ECE {c.get('ece', float('nan')):.4f} "
-                          f"({r.get('seconds')}s)", flush=True)
+
+                    def f(v, d=3):
+                        return "-" if v is None else f"{v:.{d}f}"
+                    print(f"s{seed} {sname}={level} {r['method']}: F1 {f(fr['F1'])} IoU {f(fr['IoU'])} "
+                          f"FA {f(fr['false_alarm_rate'], 4)} ECE {f(c.get('ece'), 4)} ({r.get('seconds')}s)", flush=True)
         if cache is not None and cache.exists():
             shutil.rmtree(cache)
 

@@ -67,6 +67,10 @@ class DetectConfig:
     disagree_app: float = 0.2
     moved_max_dist: float = 12.0
     coverage_min_room: float = 0.6
+    # capture-quality gate: below this share of depth points agreeing with the baseline surfaces (ICP
+    # inliers), too few changes are found to rule any out (set on development scenes s100/s101 under
+    # added depth noise: F1 held at >= 0.34 above 0.8 and fell below 0.2 under it)
+    min_depth_agreement: float = 0.8
     exclude_ceiling: bool = True
 
 
@@ -407,6 +411,39 @@ def _surface_labels(model: BaselineModel) -> np.ndarray:
     return lab
 
 
+def decide_verdict(n_confirmed: int, n_review: int, low_coverage_rooms: list, localization_confident: bool,
+                   depth_agreement: float, cfg: DetectConfig) -> tuple[str, list]:
+    """Visit verdict and its reasons.
+
+    A clean result ("Guest-ready") needs a capture that could have shown changes: with
+    too little depth agreeing with the baseline (noisy or missing depth), it becomes
+    "Not verified", and any verdict is marked "(poor depth)".
+    """
+    reasons = []
+    if n_confirmed:
+        verdict = "Needs attention"
+        reasons.append(f"{n_confirmed} confirmed change(s)")
+    elif n_review:
+        verdict = "Review needed"
+    else:
+        verdict = "Guest-ready"
+    if n_review:
+        reasons.append(f"{n_review} item(s) need human review")
+    if low_coverage_rooms:
+        verdict += " (incomplete walkthrough)"
+        reasons.append("low coverage in " + ", ".join(f"{r['name']} ({100 * r['coverage']:.0f}%)"
+                                                       for r in low_coverage_rooms))
+    if not localization_confident:
+        reasons.append("localization confidence is low")
+    if depth_agreement < cfg.min_depth_agreement:
+        if verdict.startswith("Guest-ready"):
+            verdict = verdict.replace("Guest-ready", "Not verified", 1)
+        verdict += " (poor depth)"
+        reasons.append(f"depth agrees with the baseline on only {100 * depth_agreement:.0f}% of points "
+                       f"(needs {100 * cfg.min_depth_agreement:.0f}%): changes may be missed")
+    return verdict, reasons
+
+
 def detect_changes(model: BaselineModel, session: Session, reg: Registration, cfg: DetectConfig | None = None,
                    verbose: bool = False) -> InspectionResult:
     cfg = cfg or DetectConfig()
@@ -647,24 +684,9 @@ def detect_changes(model: BaselineModel, session: Session, reg: Registration, cf
                               "area_m2": round(float(mem.sum() * 0.01), 2)})
 
     # ---------------- verdict --------------------------------------------------
-    confirmed = [c for c in final if not c.review]
-    review = [c for c in final if c.review]
     low_cov = [r for r in rooms_out if r["coverage"] < cfg.coverage_min_room]
-    reasons = []
-    if confirmed:
-        verdict = "Needs attention"
-        reasons.append(f"{len(confirmed)} confirmed change(s)")
-    elif review:
-        verdict = "Review needed"
-    else:
-        verdict = "Guest-ready"
-    if review:
-        reasons.append(f"{len(review)} item(s) need human review")
-    if low_cov:
-        verdict += " (incomplete walkthrough)"
-        reasons.append("low coverage in " + ", ".join(f"{r['name']} ({100 * r['coverage']:.0f}%)" for r in low_cov))
-    if not reg.confident:
-        reasons.append("localization confidence is low")
+    verdict, reasons = decide_verdict(sum(1 for c in final if not c.review), sum(1 for c in final if c.review),
+                                      low_cov, reg.confident, reg.inlier_ratio, cfg)
     timings["cluster_s"] = round(time.time() - t0, 2)
     timings["detect_total_s"] = round(time.time() - t_all, 2)
 

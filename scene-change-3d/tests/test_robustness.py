@@ -235,3 +235,15 @@ def test_report_runs_on_scored_paslcd_outputs(tmp_path):
     data = robustness_report.summary_data(R)
     assert data["curves"]["oscd-official-online|blur|F1"][0][0] == 0.0
     assert data["boundaries"]["oscd-official-online|blur"]["fail"][0] == 0.1    # 30% of the change found
+
+
+def test_verdict_gate_on_depth_agreement():
+    from scene_change.detect import DetectConfig, decide_verdict
+    cfg = DetectConfig()
+    assert decide_verdict(0, 0, [], True, 0.9, cfg)[0] == "Guest-ready"
+    v, why = decide_verdict(0, 0, [], True, 0.5, cfg)
+    assert v == "Not verified (poor depth)" and "changes may be missed" in why[-1]
+    assert decide_verdict(2, 1, [], True, 0.5, cfg)[0] == "Needs attention (poor depth)"
+    room = [{"name": "bathroom", "coverage": 0.2}]
+    assert decide_verdict(0, 0, room, True, 0.5, cfg)[0] == "Not verified (incomplete walkthrough) (poor depth)"
+    assert decide_verdict(0, 3, [], True, 0.95, cfg)[0] == "Review needed"

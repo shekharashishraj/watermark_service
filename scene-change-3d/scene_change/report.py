@@ -294,7 +294,7 @@ footer { color: var(--muted); font-size: 0.82rem; border-top: 1px solid var(--ru
   // ---------- summary ----------
   const v = document.getElementById("verdict");
   v.textContent = S.verdict;
-  v.className = "verdict " + (S.verdict.startsWith("Guest-ready") ? "ok" : S.verdict.startsWith("Review") ? "warn" : "crit");
+  v.className = "verdict " + (S.verdict.startsWith("Guest-ready") ? "ok" : (S.verdict.startsWith("Review") || S.verdict.startsWith("Not verified")) ? "warn" : "crit");
   document.getElementById("reasons").textContent = S.verdict_reasons.join(" · ");
   const bt = S.counts.by_type;
   const tally = [["Confirmed", S.counts.confirmed], ["Needs review", S.counts.needs_review], ["Missing", bt.missing],

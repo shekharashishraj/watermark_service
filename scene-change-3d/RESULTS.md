@@ -47,6 +47,13 @@ are mostly restyle-only detections (colour changed, geometry did not), which alw
 to a person with before/after images; lamps switched on or off between visits cause
 most of the wrong ones.
 
+Since these numbers, the robustness study (`ROBUSTNESS.md`) added two capture-quality
+safeguards: a clean verdict is withheld when the depth or the exposure could not have
+shown a change. Re-run on the same 15 scenes with both on, frame IoU, F1, false alarms,
+object recall and confirmed false positives match the tables above to within 0.001, no
+safeguard fires, the verdicts are the same, and wrong review flags per visit drop slightly
+(5.6 / 5.4 / 7.6 to 5.4 / 5.2 / 7.0 for mixed / partial / clean).
+
 Missed changes are mostly small objects: a trash bin, a bottle, a toiletry item, a toy, a
 backpack, and a coffee stain in a half-panned room.
 

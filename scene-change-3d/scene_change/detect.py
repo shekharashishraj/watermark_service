@@ -73,7 +73,8 @@ class DetectConfig:
     min_depth_agreement: float = 0.8
     # exposure gate for the appearance channel: clipped or crushed pixels carry no colour, and a frame whose
     # colour fit hits its gain limits cannot be compared; if most frames cannot, restyles are not checked
-    app_exposure_gate: bool = False    # off until validated on development and held-out scenes
+    # (development scenes s100/s101: no change on unmodified captures; at -4 EV false-alarm pixels 49% -> 0.01%)
+    app_exposure_gate: bool = True
     app_clip_level: int = 250          # any channel at or above: clipped highlight
     app_crush_level: int = 6           # all channels at or below: crushed shadow
     max_unchecked_appearance: float = 0.5

@@ -71,6 +71,12 @@ class DetectConfig:
     # inliers), too few changes are found to rule any out (set on development scenes s100/s101 under
     # added depth noise: F1 held at >= 0.34 above 0.8 and fell below 0.2 under it)
     min_depth_agreement: float = 0.8
+    # exposure gate for the appearance channel: clipped or crushed pixels carry no colour, and a frame whose
+    # colour fit hits its gain limits cannot be compared; if most frames cannot, restyles are not checked
+    app_exposure_gate: bool = False    # off until validated on development and held-out scenes
+    app_clip_level: int = 250          # any channel at or above: clipped highlight
+    app_crush_level: int = 6           # all channels at or below: crushed shadow
+    max_unchecked_appearance: float = 0.5
     exclude_ceiling: bool = True
 
 
@@ -201,6 +207,8 @@ class Evidence:
     add_F: np.ndarray
     color_fits: list
     seconds: float
+    app_frames_skipped: int = 0   # frames whose exposure the colour fit could not model (no appearance evidence)
+    app_frames: int = 0           # frames with enough surfaces for a colour fit
 
 
 def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarray, cfg: DetectConfig,
@@ -226,6 +234,7 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
     H, W = session.height, session.width
     fx = K[0, 0]
     add_P, add_C, add_F, fits = [], [], [], []
+    n_fit_frames = n_skipped = 0
     offs = [(dv, du) for dv in (-1, 0, 1) for du in (-1, 0, 1)]
     for i in range(len(session)):
         T_wc = poses[i]
@@ -275,12 +284,22 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
         S = _integral(rgb)
         r = np.clip(np.round(0.55 * g.voxel * fx / zi), 0, 4).astype(np.int64)
         near_edge = wedge.any(1)
-        ci = np.nonzero(confirm & ~near_edge)[0]
-        vi_ = np.nonzero(viol)[0]
+        exposed = np.ones(len(idx), bool)
+        if cfg.app_exposure_gate:
+            # footprints touching clipped or crushed pixels say nothing about colour
+            u8 = session.rgb[i]
+            bad = (u8 >= cfg.app_clip_level).any(axis=2) | (u8 <= cfg.app_crush_level).all(axis=2)
+            exposed = _box_mean(_integral(bad[..., None]), ui, vi, r, W, H)[:, 0] == 0
+        ci = np.nonzero(confirm & ~near_edge & exposed)[0]
+        vi_ = np.nonzero(viol & exposed)[0]
         if len(ci) >= 40:
             c_obs = _box_mean(S, ui[ci], vi[ci], r[ci], W, H)
             a, b, ok = fit_color_affine(colg[idx[ci]], c_obs)
             fits.append((i, a.tolist(), b.tolist()))
+            n_fit_frames += 1
+            if ok and cfg.app_exposure_gate and (np.any(a <= 0.3 + 1e-6) or np.any(a >= 3.0 - 1e-6)):
+                ok = False                      # the camera's response left the range the fit can model
+                n_skipped += 1
             if ok:
                 gi = idx[ci]
                 pred = np.clip(colg[gi] * a + b, 0.0, None)
@@ -313,7 +332,7 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
     cat = (lambda L, shape: np.concatenate(L) if L else np.zeros(shape))
     return Evidence(n_conf, n_viol, n_view, n_app, n_app_hi, app_sum, n_viol_app_hi, app_dsum, app_dabs,
                     cat(add_P, (0, 3)), cat(add_C, (0, 3)), cat(add_F, (0,)).astype(np.int32), fits,
-                    time.time() - t0)
+                    time.time() - t0, n_skipped, n_fit_frames)
 
 
 # ----------------------------------------------------------------------------
@@ -363,11 +382,13 @@ class InspectionResult:
     timings: dict
     config: dict
     poses: np.ndarray                # inspection camera poses in the baseline frame
+    quality: dict = field(default_factory=dict)   # capture quality behind the verdict
 
     def summary(self) -> dict:
         return {
             "verdict": self.verdict,
             "verdict_reasons": self.verdict_reasons,
+            "capture_quality": self.quality,
             "counts": {
                 "confirmed": sum(1 for c in self.changes if not c.review),
                 "needs_review": sum(1 for c in self.changes if c.review),
@@ -412,12 +433,13 @@ def _surface_labels(model: BaselineModel) -> np.ndarray:
 
 
 def decide_verdict(n_confirmed: int, n_review: int, low_coverage_rooms: list, localization_confident: bool,
-                   depth_agreement: float, cfg: DetectConfig) -> tuple[str, list]:
+                   depth_agreement: float, cfg: DetectConfig, appearance_unchecked: float = 0.0) -> tuple[str, list]:
     """Visit verdict and its reasons.
 
     A clean result ("Guest-ready") needs a capture that could have shown changes: with
-    too little depth agreeing with the baseline (noisy or missing depth), it becomes
-    "Not verified", and any verdict is marked "(poor depth)".
+    too little depth agreeing with the baseline (noisy or missing depth), or with colours
+    not comparable in most frames (exposure), it becomes "Not verified", and any verdict
+    is marked "(poor depth)" or "(poor exposure)".
     """
     reasons = []
     if n_confirmed:
@@ -441,6 +463,12 @@ def decide_verdict(n_confirmed: int, n_review: int, low_coverage_rooms: list, lo
         verdict += " (poor depth)"
         reasons.append(f"depth agrees with the baseline on only {100 * depth_agreement:.0f}% of points "
                        f"(needs {100 * cfg.min_depth_agreement:.0f}%): changes may be missed")
+    if appearance_unchecked > cfg.max_unchecked_appearance:
+        if verdict.startswith("Guest-ready"):
+            verdict = verdict.replace("Guest-ready", "Not verified", 1)
+        verdict += " (poor exposure)"
+        reasons.append(f"colours could not be compared in {100 * appearance_unchecked:.0f}% of frames "
+                       "(exposure): stains and restyles are not checked")
     return verdict, reasons
 
 
@@ -685,13 +713,16 @@ def detect_changes(model: BaselineModel, session: Session, reg: Registration, cf
 
     # ---------------- verdict --------------------------------------------------
     low_cov = [r for r in rooms_out if r["coverage"] < cfg.coverage_min_room]
+    unchecked = ev.app_frames_skipped / max(ev.app_frames, 1)
     verdict, reasons = decide_verdict(sum(1 for c in final if not c.review), sum(1 for c in final if c.review),
-                                      low_cov, reg.confident, reg.inlier_ratio, cfg)
+                                      low_cov, reg.confident, reg.inlier_ratio, cfg, unchecked)
     timings["cluster_s"] = round(time.time() - t0, 2)
     timings["detect_total_s"] = round(time.time() - t_all, 2)
 
     regd = {"inlier_ratio": round(reg.inlier_ratio, 3), "rmse_m": round(reg.rmse, 4), "confident": reg.confident,
             "seconds": round(reg.seconds, 2), "chunks": reg.chunk_stats, "candidates": reg.candidates,
             "T_baseline_from_inspection": np.round(reg.T_bs, 5).tolist()}
+    quality = {"depth_agreement": round(float(reg.inlier_ratio), 3),
+               "appearance_unchecked": round(float(unchecked), 3), "colour_fit_frames": int(ev.app_frames)}
     return InspectionResult(final, unv_regions, new_areas, rooms_out, verdict, reasons, status, added_vox,
-                            added_labels, new_vox, regd, timings, asdict(cfg), reg.poses)
+                            added_labels, new_vox, regd, timings, asdict(cfg), reg.poses, quality)

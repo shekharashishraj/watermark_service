@@ -737,11 +737,13 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str, preamble: str | None =
             continue
         L.append(f"## Offline against online ({LABEL[on_m]} vs {LABEL[off_m]})\n")
         L.append("O-SCD's online masks are rendered right after each frame; the offline masks come from the same "
-                 "change field after refinement over all frames. Mean frame F1 by walkthrough third:\n")
+                 "change field after refinement over all frames. Mean frame F1 by walkthrough third (stressors that "
+                 "remove frames are left out: their thirds hold different frames):\n")
         L.append("| Condition | Online: early / middle / late | Offline: early / middle / late |")
         L.append("|---|---|---|")
         conds = [("reference", "none", 0.0)] + [(f"{STRESS_TITLE[s]}, {lv_label(s, worst_level(s))}", s,
-                                                 worst_level(s)) for s in R.stressors]
+                                                 worst_level(s)) for s in R.stressors
+                                                if s not in ("coverage", "sparse")]
         for name, s, lv in conds:
             on = temporal(R, on_m, s, lv)
             off = temporal(R, off_m, s, lv)
@@ -882,7 +884,8 @@ def summary_data(R: Records) -> dict:
                 out.setdefault("recalibrated_ece", {})[f"{m}|{name}"] = rc[0]
     for on_m, off_m in ONLINE_OFFLINE:
         if on_m in R.methods and off_m in R.methods:
-            for name, st, lv in [("reference", "none", 0.0)] + [(st, st, worst_level(st)) for st in R.stressors]:
+            for name, st, lv in [("reference", "none", 0.0)] + [(st, st, worst_level(st)) for st in R.stressors
+                                                                 if st not in ("coverage", "sparse")]:
                 out["temporal"][f"{on_m}|{name}"] = temporal(R, on_m, st, lv)
                 out["temporal"][f"{off_m}|{name}"] = temporal(R, off_m, st, lv)
     if "coverage" in R.stressors and "ours" in R.methods:

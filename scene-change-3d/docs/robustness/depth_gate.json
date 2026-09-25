@@ -1,0 +1,66 @@
+{
+ "cutoff": 0.8,
+ "set_on": "development scenes s100/s101 (mixed and clean) under the depth stressor",
+ "levels": [
+  {
+   "depth_noise": 0.0,
+   "inlier_min": 0.822,
+   "inlier_max": 0.913,
+   "mixed_f1_mean": 0.635,
+   "wrong_clean_before": 0,
+   "wrong_clean_after": 0,
+   "clean_scene_guest_ready_before": 0,
+   "clean_scene_guest_ready_after": 0,
+   "flagged_poor_depth": 0,
+   "runs": 10
+  },
+  {
+   "depth_noise": 1.0,
+   "inlier_min": 0.762,
+   "inlier_max": 0.854,
+   "mixed_f1_mean": 0.405,
+   "wrong_clean_before": 0,
+   "wrong_clean_after": 0,
+   "clean_scene_guest_ready_before": 2,
+   "clean_scene_guest_ready_after": 2,
+   "flagged_poor_depth": 5,
+   "runs": 10
+  },
+  {
+   "depth_noise": 2.0,
+   "inlier_min": 0.643,
+   "inlier_max": 0.72,
+   "mixed_f1_mean": 0.234,
+   "wrong_clean_before": 0,
+   "wrong_clean_after": 0,
+   "clean_scene_guest_ready_before": 3,
+   "clean_scene_guest_ready_after": 0,
+   "flagged_poor_depth": 10,
+   "runs": 10
+  },
+  {
+   "depth_noise": 4.0,
+   "inlier_min": 0.492,
+   "inlier_max": 0.547,
+   "mixed_f1_mean": 0.084,
+   "wrong_clean_before": 1,
+   "wrong_clean_after": 0,
+   "clean_scene_guest_ready_before": 4,
+   "clean_scene_guest_ready_after": 0,
+   "flagged_poor_depth": 10,
+   "runs": 10
+  },
+  {
+   "depth_noise": 8.0,
+   "inlier_min": 0.314,
+   "inlier_max": 0.395,
+   "mixed_f1_mean": 0.0,
+   "wrong_clean_before": 5,
+   "wrong_clean_after": 0,
+   "clean_scene_guest_ready_before": 5,
+   "clean_scene_guest_ready_after": 0,
+   "flagged_poor_depth": 10,
+   "runs": 10
+  }
+ ]
+}

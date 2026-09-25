@@ -230,6 +230,7 @@ def run_methods(ctx: SceneContext, session, keep: np.ndarray, methods, encoder=N
                  "geometry": ch.geometry_score, "appearance": ch.appearance_score} for ch in res.changes]
         flags = region_flags(res, model, ctx.changes, ctx.T_wb)
         common = {"objects": ev["objects"], "unverified": ev["unverified"], "registration": ev["registration"],
+                  "self_registration": {k: res.registration.get(k) for k in ("inlier_ratio", "rmse_m", "confident")},
                   "verdict": res.verdict, "seconds": secs, "fps": round(len(session) / max(secs, 1e-9), 2)}
         r_all = {"method": "ours", **score_variant(pred, scores, gt, cm, ctx.changes, 0.0), **common,
                  "detections": dets,

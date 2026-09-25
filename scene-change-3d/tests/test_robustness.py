@@ -202,3 +202,36 @@ def test_official_patches_are_idempotent(tmp_path):
         assert [c.image_name for c in ns["training"](Scene())] == ["b_test"]
     finally:
         del os.environ["SCD_HOLDOUT"]
+
+
+def test_report_runs_on_scored_paslcd_outputs(tmp_path):
+    import json
+
+    import cv2
+    from scene_change.harness import paslcd, robustness_report
+    scene = _fake_oscd_scene(tmp_path / "S", n=12, gt_every=2)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    rng = np.random.default_rng(1)
+    for stressor, level, keep in (("none", 0.0, 1.0), ("blur", 0.04, 0.9), ("blur", 0.1, 0.3), ("dark", -2.0, 0.95)):
+        pred, sc = tmp_path / f"p_{stressor}{level}", tmp_path / f"s_{stressor}{level}"
+        pred.mkdir()
+        sc.mkdir()
+        for g in sorted((scene / "gt_mask").iterdir()):
+            m = cv2.imread(str(g), 0) > 127
+            s = np.where(m, 0.9 * (rng.random(m.shape) < keep), 0.3 * rng.random(m.shape)).astype(np.float32)
+            cv2.imwrite(str(pred / g.name), ((s > 0.5) * 255).astype(np.uint8))
+            np.save(sc / (g.stem + ".npy"), s.astype(np.float16))
+        for inst in ("Instance_1/S", "Instance_2/S"):
+            rec = paslcd.score_outputs(scene / "gt_mask", pred, sc)
+            rec.update(method="oscd-official-online", seed=inst, kind="paslcd", stressor=stressor, level=level,
+                       dataset="PASLCD")
+            with open(runs / "results_test.jsonl", "a") as f:
+                f.write(json.dumps(rec, default=float) + "\n")
+    R = robustness_report.Records(robustness_report.load_records(runs))
+    text, summary = robustness_report.build_report(R, tmp_path / "figs", "figs")
+    assert "PASLCD" in text and "Motion blur" in text
+    assert (tmp_path / "figs" / "f1_vs_severity.png").exists()
+    data = robustness_report.summary_data(R)
+    assert data["curves"]["oscd-official-online|blur|F1"][0][0] == 0.0
+    assert data["boundaries"]["oscd-official-online|blur"]["fail"][0] == 0.1    # 30% of the change found

@@ -38,10 +38,11 @@ LABEL = {"ours": "Ours (3D, offline)", "ours-confirmed": "Ours, confirmed only",
          "oscd-offline": "O-SCD offline (refined)", "video2d": "2D video comparison",
          "oscd-official-online": "O-SCD official, online", "oscd-official-offline": "O-SCD official, refined",
          "mv3dcd-official": "MV3DCD official (offline)"}
-# colour follows the method, never its rank; the official O-SCD runs share their re-implementation's hues
-COLOR = {"ours": "#2a78d6", "oscd-online": "#eb6834", "oscd-offline": "#1baf7a", "video2d": "#eda100",
-         "ours-confirmed": "#e87ba4", "oscd-official-online": "#eb6834", "oscd-official-offline": "#1baf7a",
-         "mv3dcd-official": "#008300"}
+# colour follows the method, never its rank (validated for colour-vision deficiency with the page palette);
+# the official O-SCD runs share their re-implementation's hues
+COLOR = {"ours": "#008c76", "oscd-online": "#eb6834", "oscd-offline": "#4a3aa7", "video2d": "#eda100",
+         "ours-confirmed": "#e87ba4", "oscd-official-online": "#eb6834", "oscd-official-offline": "#4a3aa7",
+         "mv3dcd-official": "#2a78d6"}
 MARKER = {"ours": "o", "oscd-online": "s", "oscd-offline": "^", "video2d": "D", "ours-confirmed": "v",
           "oscd-official-online": "s", "oscd-official-offline": "^", "mv3dcd-official": "o"}
 ONLINE_OFFLINE = (("oscd-online", "oscd-offline"), ("oscd-official-online", "oscd-official-offline"))
@@ -156,11 +157,43 @@ class Records:
         out["fa_frames"] = e["changefree_frames_flagged"] / e["changefree_frames"] if e["changefree_frames"] else None
         reg = r.get("registration") or {}
         out["reg_cm"] = reg.get("trans_cm_median")
+        out["health"] = health(r)
+        dets = r.get("detections")
+        if dets:
+            conf = [d for d in dets if not d["review"]]
+            out["confirmed_precision"] = float(np.mean([d["correct"] for d in conf])) if conf else None
+            out["all_precision"] = float(np.mean([d["correct"] for d in dets]))
         if "localized" in r:
             out["localized"] = r["localized"] / max(r["n_frames"], 1)
         if r.get("fps") is not None:
             out["fps"] = r["fps"]
         return out
+
+
+HEALTH = {"video2d": "frames aligned to a baseline frame", "oscd-online": "frames localised by PnP",
+          "oscd-offline": "frames localised by PnP", "ours": "detections confirmed (not sent to review)"}
+
+
+def health(r: dict):
+    """The method's own signal of how well the run went (higher = healthier), or None."""
+    m = r["method"]
+    if m == "video2d" and r.get("matched_frames") is not None:
+        return r["matched_frames"] / max(r["n_frames"], 1)
+    if m.startswith("oscd") and r.get("localized") is not None:
+        return r["localized"] / max(r["n_frames"], 1)
+    if m == "ours" and r.get("detections") is not None:
+        d = r["detections"]
+        return float(np.mean([not x["review"] for x in d])) if d else 1.0
+    return None
+
+
+def spearman(a, b):
+    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    if len(a) < 4 or np.std(a) == 0 or np.std(b) == 0:
+        return None
+    ra = np.argsort(np.argsort(a)).astype(np.float64)
+    rb = np.argsort(np.argsort(b)).astype(np.float64)
+    return float(np.corrcoef(ra, rb)[0, 1])
 
 
 def ci(values):
@@ -207,6 +240,8 @@ def boundary(R: Records, method: str, stressor: str, key: str = "F1", drop: floa
         return None
     order = severity_levels(stressor)
     beyond = set(order[order.index(ref_lv) + 1:])          # levels more severe than the reference
+    if not any(c[0] in beyond for c in cv):
+        return None                      # nothing measured beyond the reference yet
     fail = None
     for lv, m, lo, hi, n, vals in cv:
         if lv not in beyond:
@@ -531,6 +566,51 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str, preamble: str | None =
                      f"{fmt(mean('fp_far_share'), pct=True)} | {fmt(mean('fa_frames'), pct=True)} |")
     L.append("")
 
+    # self-diagnostics
+    L.append("## Does each method know when it is failing?\n")
+    L.append("Each method has an internal signal of how the run went: the 2D method knows how many frames it "
+             "could align to a baseline frame, O-SCD how many it could localise with PnP, and our detector sends "
+             "uncertain detections to review instead of confirming them. Rank correlation over all runs between "
+             "that signal and frame F1 (1: the signal tracks accuracy; 0: it says nothing), and the signal at "
+             "the reference and at each stressor's most severe level.\n")
+    L.append("| Method | Signal | Correlation with F1 | Reference | " +
+             " | ".join(STRESS_TITLE[s] for s in R.stressors) + " |")
+    L.append("|---|---|---|---|" + "---|" * len(R.stressors))
+    summary["health"] = {}
+    for m in R.methods:
+        if m not in HEALTH:
+            continue
+        pairs = []
+        for r in R.recs:
+            if r["method"] != m:
+                continue
+            mt = R.metrics(r, r["stressor"] if r["stressor"] != "none" else "none")
+            if mt.get("health") is not None and mt.get("F1") is not None:
+                pairs.append((mt["health"], mt["F1"]))
+        rho = spearman([a for a, _ in pairs], [b for _, b in pairs]) if pairs else None
+        cells = []
+        for s_ in ["none"] + R.stressors:
+            lv = 0.0 if s_ == "none" else worst_level(s_)
+            vals = [R.metrics(R.get(sd, s_, lv, m), s_).get("health") for sd in R.seeds if R.get(sd, s_, lv, m)]
+            c = ci(vals)
+            cells.append(fmt(None if c is None else c[0], pct=True))
+        summary["health"][m] = {"rho": rho, "n": len(pairs)}
+        L.append(f"| {LABEL[m]} | {HEALTH[m]} | {fmt(rho, digits=2)} (n={len(pairs)}) | " + " | ".join(cells) + " |")
+    if "ours" in R.methods:
+        L.append("")
+        L.append("Precision of our detections, confirmed ones against all (share matching a real change):\n")
+        L.append("| Condition | All detections | Confirmed only |")
+        L.append("|---|---|---|")
+        for name, s_, lv in [("reference", "none", 0.0)] + [(f"{STRESS_TITLE[s]}, {lv_label(s, worst_level(s))}", s,
+                                                            worst_level(s)) for s in R.stressors]:
+            vals = [R.metrics(R.get(sd, s_, lv, "ours"), s_) for sd in R.seeds if R.get(sd, s_, lv, "ours")]
+            if not vals:
+                continue
+            a = ci([v.get("all_precision") for v in vals])
+            c = ci([v.get("confirmed_precision") for v in vals])
+            L.append(f"| {name} | {fmt(None if a is None else a[0], digits=2)} | {fmt(None if c is None else c[0], digits=2)} |")
+    L.append("")
+
     # boundaries
     L.append("## Failure boundaries\n")
     L.append(f"First severity at which mean frame F1 falls at least {int(DROP * 100)}% below the reference, "
@@ -730,6 +810,85 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str, preamble: str | None =
     return "\n".join(L) + "\n", summary
 
 
+def summary_data(R: Records) -> dict:
+    """Everything the overview page draws: curves, boundaries, reliability, offline vs online."""
+    out = {"dataset": R.dataset, "seeds": R.seeds, "methods": R.methods, "stressors": R.stressors,
+           "labels": {m: LABEL[m] for m in R.methods}, "titles": {s: STRESS_TITLE[s] for s in R.stressors},
+           "xlabels": {s: XLABEL[s] for s in R.stressors},
+           "levels": {s: severity_levels(s) for s in R.stressors},
+           "reference": {s: reference_level(s) for s in R.stressors}, "curves": {}, "boundaries": {},
+           "reliability": {}, "temporal": {}, "table": []}
+    keys = ("F1", "IoU", "FA", "recall", "precision", "recall_px", "ece", "ap", "best_t", "fp_conf", "fn_conf",
+            "reg_cm", "localized")
+    for m in R.methods:
+        vals = [R.metrics(R.get(sd, "none", 0.0, m), "none") for sd in R.seeds if R.get(sd, "none", 0.0, m)]
+        if vals:
+            row = {"method": m}
+            for k in keys + ("fps",):
+                c = ci([v.get(k) for v in vals])
+                row[k] = None if c is None else c[0]
+            out["table"].append(row)
+        for st in R.stressors:
+            for k in keys:
+                cv = curve(R, m, st, k)
+                if cv:
+                    out["curves"][f"{m}|{st}|{k}"] = [[c[0], c[1], c[2], c[3], c[4]] for c in cv]
+            b = boundary(R, m, st)
+            if b is not None:
+                out["boundaries"][f"{m}|{st}"] = b
+        conds = [("reference", "none", 0.0)] + [(st, st, worst_level(st)) for st in R.stressors]
+        for name, st, lv in conds:
+            h = pooled_hist(R, m, st, lv)
+            if h is not None:
+                out["reliability"][f"{m}|{name}"] = [[b["conf"], b["freq"], b["n"]] for b in cal.reliability(h, 10)
+                                                     if b["n"] >= 200]
+            rc = ci([recalibrated_ece(R, m, st, lv, sd) for sd in R.seeds])
+            if rc is not None:
+                out.setdefault("recalibrated_ece", {})[f"{m}|{name}"] = rc[0]
+    for on_m, off_m in ONLINE_OFFLINE:
+        if on_m in R.methods and off_m in R.methods:
+            for name, st, lv in [("reference", "none", 0.0)] + [(st, st, worst_level(st)) for st in R.stressors]:
+                out["temporal"][f"{on_m}|{name}"] = temporal(R, on_m, st, lv)
+                out["temporal"][f"{off_m}|{name}"] = temporal(R, off_m, st, lv)
+    if "coverage" in R.stressors and "ours" in R.methods:
+        out["unobserved"] = []
+        for lv in STRESSORS["coverage"].levels:
+            lost = flagged = 0
+            for sd in R.seeds:
+                r0, r = R.get(sd, "none", 0.0, "ours"), R.get(sd, "coverage", lv, "ours")
+                if r0 is None or r is None:
+                    continue
+                seen0 = {c["id"] for c in r0["changes"] if c["gt_px"] > 0}
+                for c in r["changes"]:
+                    if c["id"] in seen0 and c["gt_px"] == 0:
+                        lost += 1
+                        flagged += bool(c.get("unverified_flag"))
+            out["unobserved"].append({"level": lv, "lost": lost, "flagged": flagged})
+    vols = sorted(c["volume"] for r in R.recs for c in r["changes"] if c.get("volume") is not None)
+    med = float(np.median(vols)) if vols else 0.0
+    if "compress" in R.stressors:
+        out["compression"] = {"median_volume": med, "rows": []}
+        for m in R.methods:
+            for lv in severity_levels("compress"):
+                small, large, f1, gauss = [], [], [], []
+                for sd in R.seeds:
+                    r = R.get(sd, "compress", lv, m)
+                    if r is None:
+                        continue
+                    f1.append(r["frames"]["F1"])
+                    if r.get("gaussians"):
+                        gauss.append(r["gaussians"])
+                    for c in r["changes"]:
+                        if c["gt_px"] > 0 and c.get("volume") is not None:
+                            (small if c["volume"] < med else large).append(c["detected"])
+                if f1 and any(R.get(sd, "compress", l2, m) for sd in R.seeds for l2 in STRESSORS["compress"].levels):
+                    out["compression"]["rows"].append({
+                        "method": m, "voxel_cm": 100 * lv, "gaussians": int(np.mean(gauss)) if gauss else None,
+                        "small": float(np.mean(small)) if small else None, "large": float(np.mean(large)) if large else None,
+                        "F1": ci(f1)[0]})
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runs", default="runs/robust")
@@ -749,7 +908,8 @@ def main(argv=None):
     pre = Path(args.preamble).read_text() if args.preamble and Path(args.preamble).exists() else None
     text, summary = build_report(R, fig_dir, rel.as_posix(), pre)
     out.write_text(text)
-    (fig_dir / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
+    summary.update(summary_data(R))
+    (fig_dir / "summary.json").write_text(json.dumps(summary, default=float))
     print(f"wrote {out} and figures in {fig_dir} ({len(R.recs)} records, seeds {R.seeds})")
 
 

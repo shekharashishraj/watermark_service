@@ -99,12 +99,12 @@ class Sam2Encoder:
 
     name = "sam2.1-hiera-tiny"
 
-    def __init__(self, path=None, threads: int = 4, normalize: bool = False):
+    def __init__(self, path=None, threads: int | None = None, normalize: bool = False):
         import onnxruntime as ort
 
         path = Path(path or os.environ.get("OSCD_SAM2_ONNX", DEFAULT_SAM2_ONNX))
         so = ort.SessionOptions()
-        so.intra_op_num_threads = threads
+        so.intra_op_num_threads = threads or int(os.environ.get("OSCD_THREADS", 4))
         so.log_severity_level = 3
         self.sess = ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
         self.input = self.sess.get_inputs()[0].name

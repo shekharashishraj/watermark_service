@@ -1,0 +1,876 @@
+<title>Scene Change 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #F2F4F3; --surface: #FFFFFF; --sunken: #E8EDEB; --ink: #18211E; --muted: #5A6964; --faint: #7D8B86; --rule: #D3DBD8;
+  --accent: #1F6F66; --accent-wash: #DDEFEB;
+  --missing: #C43D28; --added: #2E8B3A; --moved: #2C5FC4; --appearance: #B7800F; --unverified: #8B919B;
+  --ok: #1F7A52; --warn: #A87308; --crit: #C43D28;
+  --chart-hi: #008C76; --chart-lo: #9AA5A1; --grid: #E3E8E6; --axis: #C4CDCA;
+  --viewer-bg: #E4EAE7;
+  --display: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1513; --surface: #17201D; --sunken: #121A17; --ink: #E3EBE8; --muted: #97A8A2; --faint: #74847F; --rule: #2A3632;
+    --accent: #5CC3B5; --accent-wash: #173630;
+    --missing: #F07A62; --added: #6CCB76; --moved: #7EA5F2; --appearance: #E5B046; --unverified: #8E96A1;
+    --ok: #62C995; --warn: #E5B046; --crit: #F07A62;
+    --chart-hi: #1FA08E; --chart-lo: #5F6B67; --grid: #222C29; --axis: #34403C;
+    --viewer-bg: #141C19;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0F1513; --surface: #17201D; --sunken: #121A17; --ink: #E3EBE8; --muted: #97A8A2; --faint: #74847F; --rule: #2A3632;
+  --accent: #5CC3B5; --accent-wash: #173630;
+  --missing: #F07A62; --added: #6CCB76; --moved: #7EA5F2; --appearance: #E5B046; --unverified: #8E96A1;
+  --ok: #62C995; --warn: #E5B046; --crit: #F07A62;
+  --chart-hi: #1FA08E; --chart-lo: #5F6B67; --grid: #222C29; --axis: #34403C;
+  --viewer-bg: #141C19;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); padding-inline: 16px; padding-block: 0 64px; }
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 56px; }
+h1, h2, h3 { font-family: var(--display); font-stretch: 85%; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2rem, 4.6vw, 3.1rem); font-weight: 780; line-height: 1.02; }
+h2 { font-size: clamp(1.35rem, 2.4vw, 1.7rem); font-weight: 720; line-height: 1.15; }
+h3 { font-size: 1.02rem; font-weight: 660; }
+p { margin: 0; }
+a { color: var(--accent); text-underline-offset: 2px; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font: 500 0.72rem/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { color: var(--muted); max-width: 68ch; }
+section { display: grid; gap: 20px; scroll-margin-top: 64px; }
+.sec-head { display: grid; gap: 8px; }
+
+/* header */
+header.top { display: grid; gap: 18px; padding-top: 36px; }
+.status-line { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; color: var(--muted); }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; font: 600 0.85rem/1 var(--body); border: 1.5px solid currentColor; white-space: nowrap; }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.crit { color: var(--crit); } .pill.run { color: var(--accent); }
+.pill.run::before { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+.tally { display: flex; flex-wrap: wrap; gap: 12px 34px; padding: 16px 0; border-block: 1px solid var(--rule); }
+.tally div { display: grid; gap: 2px; }
+.tally b { font: 600 1.6rem/1.1 var(--body); }
+.tally small { color: var(--muted); font-size: 0.8rem; }
+
+/* section nav */
+nav.jump { margin-top: -36px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); border-bottom: 1px solid var(--rule); margin-inline: -16px; padding: 10px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+nav.jump a { color: var(--muted); text-decoration: none; font: 500 0.85rem/1 var(--body); padding: 7px 11px; border-radius: 7px; white-space: nowrap; }
+nav.jump a:hover { color: var(--ink); background: var(--sunken); }
+nav.jump a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* checklist */
+.checklist { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.check { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 16px; display: grid; gap: 8px; align-content: start; }
+.check-top { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
+.check p { color: var(--muted); font-size: 0.9rem; }
+
+/* pipeline */
+.flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+.stage { padding: 16px; display: grid; gap: 6px; align-content: start; position: relative; }
+.stage + .stage { border-left: 1px solid var(--rule); }
+.stage + .stage::before { content: ""; position: absolute; left: -7px; top: 22px; width: 12px; height: 12px; background: var(--surface); border-top: 1px solid var(--rule); border-right: 1px solid var(--rule); transform: rotate(45deg); }
+.stage .k { font: 600 1.25rem/1.1 var(--body); }
+.stage p { color: var(--muted); font-size: 0.86rem; }
+@media (max-width: 900px) {
+  .flow { grid-template-columns: minmax(0, 1fr); }
+  .stage + .stage { border-left: 0; border-top: 1px solid var(--rule); }
+  .stage + .stage::before { left: 22px; top: -7px; transform: rotate(135deg); }
+}
+
+/* charts */
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 18px; display: grid; gap: 14px; align-content: start; min-width: 0; }
+.card-head { display: grid; gap: 4px; }
+.card-head p { color: var(--muted); font-size: 0.86rem; }
+.bars { display: grid; gap: 12px; position: relative; }
+.bar-row { display: grid; gap: 5px; cursor: default; }
+.bar-row .lbl { font-size: 0.86rem; display: flex; justify-content: space-between; gap: 10px; }
+.bar-row .lbl span:last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+.track { position: relative; height: 14px; }
+.track .bar { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; background: var(--chart-lo); min-width: 2px; }
+.track .bar.hi { background: var(--chart-hi); }
+.track .bar.pending { background: repeating-linear-gradient(45deg, var(--grid) 0 5px, transparent 5px 10px); width: 100%; border-radius: 4px; }
+.gridlines { position: absolute; inset: 0; pointer-events: none; }
+.gridlines i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+.refline { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 2px solid var(--ink); pointer-events: none; z-index: 1; }
+.axis { position: relative; height: 18px; font: 0.72rem var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.axis span:first-child { transform: none; }
+.axis span:last-child { transform: translateX(-100%); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.8rem; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.legend i.line { width: 14px; height: 0; border-radius: 0; border-top: 2px solid var(--ink); vertical-align: 3px; }
+.dumb { display: grid; gap: 14px; }
+.dumb-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; align-items: center; }
+.dumb-row .room { font-size: 0.86rem; }
+.dumb-track { position: relative; height: 26px; }
+.dumb-track .seg { position: absolute; top: 12px; height: 2px; background: var(--axis); }
+.dumb-track .dot { position: absolute; top: 7px; width: 12px; height: 12px; border-radius: 50%; transform: translateX(-50%); box-shadow: 0 0 0 2px var(--surface); }
+.dumb-track .dot.before { background: var(--chart-lo); }
+.dumb-track .dot.after { background: var(--chart-hi); }
+.dumb-track .dot.ghost { background: transparent; border: 2px solid var(--crit); box-shadow: none; width: 11px; height: 11px; }
+.dumb-track .v { position: absolute; top: -9px; font: 0.7rem var(--mono); color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
+.tip { position: fixed; z-index: 20; pointer-events: none; background: var(--ink); color: var(--bg); font: 0.8rem/1.35 var(--body); padding: 7px 9px; border-radius: 6px; max-width: 260px; opacity: 0; transition: opacity 0.08s; }
+.tip.on { opacity: 1; }
+details.data summary { cursor: pointer; color: var(--accent); font-size: 0.84rem; }
+details.data[open] summary { margin-bottom: 8px; }
+
+/* tables */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+th, td { text-align: left; padding: 7px 12px 7px 0; border-bottom: 1px solid var(--rule); white-space: nowrap; vertical-align: top; }
+th { font: 500 0.7rem/1.2 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+td.num, th.num { text-align: right; }
+tr.summary td { font-weight: 600; border-top: 1.5px solid var(--ink); }
+.muted { color: var(--muted); }
+.note { font-size: 0.86rem; color: var(--muted); max-width: 72ch; }
+.callout { border-left: 3px solid var(--warn); padding: 4px 0 4px 14px; display: grid; gap: 6px; max-width: 80ch; }
+.callout.info { border-left-color: var(--accent); }
+
+/* viewer */
+.viewer-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 920px) { .viewer-grid { grid-template-columns: minmax(0, 1fr); } }
+.viewer { position: sticky; top: 64px; height: min(70vh, 640px); min-height: 360px; background: var(--viewer-bg); border-radius: 10px; overflow: hidden; border: 1px solid var(--rule); }
+@media (max-width: 920px) { .viewer { position: relative; top: 0; height: 56vh; } }
+.viewer canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.layers { position: absolute; left: 10px; top: 10px; display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 20px); }
+.layers label { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--rule); font-size: 0.78rem; cursor: pointer; user-select: none; }
+.layers input { accent-color: var(--accent); margin: 0; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.hint { position: absolute; right: 10px; bottom: 8px; font: 0.7rem var(--mono); color: var(--muted); }
+.nowebgl { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); }
+.changes { display: grid; gap: 10px; max-height: min(70vh, 640px); overflow-y: auto; padding-right: 4px; }
+@media (max-width: 920px) { .changes { max-height: none; } }
+.chg { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px; display: grid; gap: 8px; cursor: pointer; text-align: left; font: inherit; color: inherit; width: 100%; }
+.chg:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--rule)); }
+.chg.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.chg-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 600 0.76rem/1 var(--body); padding: 4px 8px; border-radius: 6px; color: var(--c); background: color-mix(in srgb, var(--c) 13%, transparent); }
+.chip::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.flag { font: 500 0.68rem/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 7px; border-radius: 5px; border: 1px dashed var(--warn); color: var(--warn); }
+.meta { display: flex; flex-wrap: wrap; gap: 3px 12px; color: var(--muted); font-size: 0.8rem; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pair figure { margin: 0; display: grid; gap: 3px; }
+.pair img { width: 100%; height: auto; border-radius: 5px; image-rendering: pixelated; background: var(--sunken); }
+.pair figcaption { font: 0.68rem var(--mono); color: var(--muted); }
+
+/* O-SCD */
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; counter-reset: step; }
+.step { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 16px; display: grid; gap: 8px; align-content: start; counter-increment: step; }
+.step h3::before { content: counter(step) "  "; font-family: var(--mono); color: var(--accent); }
+.step p { font-size: 0.88rem; color: var(--muted); }
+.step .same, .step .diff { font-size: 0.82rem; display: grid; grid-template-columns: 74px 1fr; gap: 8px; }
+.step .same b, .step .diff b { font: 500 0.66rem/1.6 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.step .same b { color: var(--ok); }
+.step .diff b { color: var(--warn); }
+.cues { display: grid; gap: 8px; }
+.cues img { width: 100%; height: auto; border-radius: 8px; image-rendering: pixelated; }
+.cue-cols { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; font: 0.7rem/1.3 var(--mono); color: var(--muted); }
+@media (max-width: 640px) { .cue-cols { font-size: 0.6rem; } }
+ul.plain { margin: 0; padding-left: 18px; display: grid; gap: 6px; max-width: 80ch; }
+pre.cmd { margin: 0; background: var(--sunken); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font: 0.82rem/1.6 var(--mono); }
+footer { color: var(--muted); font-size: 0.8rem; border-top: 1px solid var(--rule); padding-top: 16px; }
+@media (prefers-reduced-motion: reduce) { .pill.run::before { animation: none; } html { scroll-behavior: auto; } }
+.tip.wide { max-width: 330px; }
+[hidden] { display: none !important; }
+/* robustness study */
+:root { --m-ours: #008C76; --m-on: #eb6834; --m-off: #4a3aa7; --m-2d: #eda100; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --m-ours: #1FA08E; --m-on: #d95926; --m-off: #9085e9; --m-2d: #c98500; } }
+:root[data-theme="dark"] { --m-ours: #1FA08E; --m-on: #d95926; --m-off: #9085e9; --m-2d: #c98500; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; }
+.seg { display: inline-flex; flex-wrap: wrap; gap: 3px; background: var(--sunken); padding: 3px; border-radius: 8px; }
+.seg button { font: 500 0.82rem/1 var(--body); color: var(--muted); background: transparent; border: 0; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--rule); }
+.mlegend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.82rem; color: var(--muted); }
+.mlegend label { display: inline-flex; gap: 7px; align-items: center; cursor: pointer; user-select: none; }
+.mlegend input { accent-color: var(--accent); margin: 0; }
+.mlegend svg { width: 22px; height: 12px; overflow: visible; }
+.multiples { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 18px 22px; }
+.mini { display: grid; gap: 2px; min-width: 0; }
+.mini h4 { margin: 0; font: 600 0.9rem/1.25 var(--body); }
+.mini .xl { font-size: 0.75rem; color: var(--faint); }
+.mini svg { width: 100%; height: auto; display: block; overflow: visible; }
+.mini svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.plot text { font-family: var(--mono); font-size: 10px; fill: var(--faint); }
+.plot text.ref { fill: var(--ink); font-weight: 500; }
+.plot .gl { stroke: var(--grid); stroke-width: 1; }
+.plot .ax { stroke: var(--axis); stroke-width: 1; }
+.plot .cross { stroke: var(--axis); stroke-width: 1; }
+.tipkey { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.tiprow { display: flex; justify-content: space-between; gap: 14px; }
+.tiprow span:last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+table.bnd td.fail { color: var(--crit); }
+table.bnd td.hold { color: var(--ok); }
+table.bnd td.fail::before { content: "▼ "; }
+table.bnd td.hold::before { content: "● "; }
+.findings { display: grid; gap: 10px; }
+.findings li b { font-weight: 600; }
+.rel-wrap { max-width: 340px; }
+table.wraph th { white-space: normal; vertical-align: bottom; }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow">Veripheye · 3D scene change detection prototype</div>
+    <h1>Scene Change 3D</h1>
+    <p class="lede">Compares a new walkthrough of a property against a 3D baseline of an earlier one and reports what went missing, what was added, moved or restyled, and which areas nobody checked. Everything runs on CPU and is measured on a synthetic apartment harness with exact ground truth.</p>
+    <div class="status-line">
+      <span class="pill ok">Pipeline working end to end</span>
+      <span class="pill ok">Benchmarks finished</span>
+      <span class="pill __ROBUST_PILL_CLASS__">__ROBUST_PILL__</span>
+      <span class="pill ok">Pushed to GitHub</span>
+    </div>
+    <div class="tally" id="tally"></div>
+  </header>
+
+  <nav class="jump" aria-label="Sections">
+    <a href="#built">What's built</a><a href="#results">Results</a><a href="#robust">Robustness</a><a href="#viewer">3D inspection</a>
+    <a href="#oscd">O-SCD paper</a><a href="#code">Code</a><a href="#next">Status and next</a>
+  </nav>
+
+  <section id="built">
+    <div class="sec-head"><div class="eyebrow">Proposal deliverables</div><h2>What's built</h2></div>
+    <div class="checklist" id="checklist"></div>
+    <div class="sec-head"><h3>How an inspection runs</h3></div>
+    <div class="flow">
+      <div class="stage"><span class="eyebrow">harness/</span><h3>Two walkthroughs</h3><span class="k">160×120 RGB-D</span><p>Rendered, not filmed: a generated apartment walked through twice, with lighting changes, sensor noise and phone-style drift.</p></div>
+      <div class="stage"><span class="eyebrow">gaussians.py</span><h3>Baseline map</h3><span class="k">~190k Gaussians</span><p>Depth fused into one surfel Gaussian per 5 cm voxel, exposure-compensated, saved as a standard 3DGS .ply.</p></div>
+      <div class="stage"><span class="eyebrow">register.py</span><h3>Localize</h3><span class="k">1.3–2.2 cm</span><p>Floor-plan search over yaw, robust ICP, then drift correction kept only where it improves the local fit.</p></div>
+      <div class="stage"><span class="eyebrow">detect.py</span><h3>Detect</h3><span class="k">37 / 38 found</span><p>Surfaces now seen through are missing, new surfaces in old free space are added, pairs become moves, colour shifts are restyles.</p></div>
+      <div class="stage"><span class="eyebrow">report.py</span><h3>Report</h3><span class="k">1 HTML file</span><p>Verdict, change list with then/now images, room coverage, unchecked areas and a 3D viewer.</p></div>
+    </div>
+  </section>
+
+  <section id="results">
+    <div class="sec-head"><div class="eyebrow">Measured on the harness</div><h2>Results</h2>
+      <p class="lede">Scored the way the O-SCD paper scores its PASLCD benchmark: change IoU and F1 per inspection frame, averaged over frames that show a change. False alarms are the share of pixels flagged on frames with no change. Development scene s100 mixed: 225 frames, 8 changes.</p></div>
+    <div class="grid2">
+      <div class="card"><div class="card-head"><h3>Frame F1, development scene</h3><p>Higher is better. Teal: this prototype. Grey: comparison methods.</p></div><div class="bars" id="chart-f1"></div>
+        <details class="data"><summary>Show data</summary><div class="tablewrap"><table id="table-methods"></table></div></details></div>
+      <div class="card"><div class="card-head"><h3>Pixels flagged on frames with no change</h3><p>Lower is better. Same methods, same scene.</p></div><div class="bars" id="chart-far"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Held-out benchmark</h3><p id="bench-status">New random apartments (seeds 0 to 4) never used during development, three scenario kinds each.</p></div>
+      <div class="tablewrap"><table id="table-bench"></table></div>
+      <p class="note" id="bench-note"></p>
+      <div class="tablewrap" id="fix-wrap" hidden><table id="table-fix"></table></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><div class="card-head"><h3>Changed objects found, development scenes</h3><p>After the drift fix. Review flags go to a person with before/after images; confirmed items are reported directly.</p></div>
+        <div class="tablewrap"><table id="table-objects"></table></div></div>
+      <div class="card"><div class="card-head"><h3>Drift correction, per room</h3><p>Median position error of the second walkthrough (scene s100 clean), before and after correction.</p></div>
+        <div class="legend"><span><i style="background:var(--chart-lo)"></i>No correction</span><span><i style="background:var(--chart-hi)"></i>Gated correction (shipped)</span><span><i style="border:2px solid var(--crit);width:10px;height:10px"></i>First version, ungated</span></div>
+        <div class="dumb" id="chart-reg"></div>
+        <p class="note">The first version carried a neighbouring room's correction into the bathroom (1.3 cm became 9.1 cm). Corrections now apply only where they improve the local fit, which also halved the 95th-percentile error.</p></div>
+    </div>
+  </section>
+
+  <section id="robust">
+    <div class="sec-head"><div class="eyebrow">Submitted proposal · robustness and calibration</div><h2>Robustness under capture degradation</h2>
+      <p class="lede">How robust are 3D change detectors to realistic sensor and observation degradation, and do their change scores show when they are wrong? Every held-out walkthrough is degraded at increasing severity and each method runs on it against the same clean baseline. The ground truth does not change, because only the recording is degraded.</p></div>
+    <div class="callout info"><h3>What the sweeps show</h3><ul class="plain findings" id="robust-findings"></ul></div>
+    <div class="card">
+      <div class="card-head"><h3>Performance against severity</h3><p id="robust-sub"></p></div>
+      <div class="controls"><div class="seg" id="robust-metric" role="group" aria-label="Metric"></div><div class="mlegend" id="robust-legend" role="group" aria-label="Methods shown"></div></div>
+      <div class="multiples" id="robust-charts"></div>
+      <details class="data"><summary>Show data</summary><div class="tablewrap"><table id="robust-table"></table></div></details>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Failure boundaries</h3><p>The first severity at which frame F1 falls at least 20% below the reference, when that drop is significant across scenes. "Holds" means F1 stayed within 20% over the whole tested range.</p></div>
+      <div class="tablewrap"><table class="bnd" id="robust-bounds"></table></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><div class="card-head"><h3>Do the scores say when to worry?</h3><p>Reliability of each method's change scores, pooled over scenes: of the pixels scored around 0.6, 60% should have changed. The diagonal is perfect calibration. Black: unmodified walkthrough; colour: the chosen stressor at its most severe level.</p></div>
+        <div class="controls"><div class="seg" id="rel-method" role="group" aria-label="Method"></div><div class="seg" id="rel-stress" role="group" aria-label="Stressor"></div></div>
+        <div class="rel-wrap" id="rel-chart"></div>
+        <details class="data"><summary>Calibration table</summary><div class="tablewrap"><table id="rel-table"></table></div></details></div>
+      <div class="card"><div class="card-head"><h3>Offline against online</h3><p>O-SCD's online mask for each frame is rendered right after that frame; the offline mask comes from the same change field after refinement over the whole walk. Frame F1 by third of the walkthrough.</p></div>
+        <div class="tablewrap"><table id="oo-table"></table></div>
+        <p class="note" id="oo-note"></p></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><div class="card-head"><h3>Changes the walkthrough never saw</h3><p>Under lost coverage some changes are in no kept frame. This prototype reports areas it could not check; the other methods return "no change" there.</p></div>
+        <div class="tablewrap"><table id="unobs-table"></table></div></div>
+      <div class="card" id="compress-card"><div class="card-head"><h3>Map compression: do small changes fail first?</h3><p>The baseline map fused with coarser Gaussians (fewer, larger splats). Share of visible changes found, split at the median object size.</p></div>
+        <div class="tablewrap"><table id="compress-table"></table></div></div>
+    </div>
+    <div class="grid2" id="gates">
+      <div class="card"><div class="card-head"><h3>Safeguard: no all-clear from noisy depth</h3><p>The sweeps showed this prototype reporting "Guest-ready" while 8 changes were present, when the depth sensor was noisy. A clean verdict now needs at least 80% of the depth to agree with the baseline; below that it says "Not verified (poor depth)". The cut-off was set on the development scenes; below are the held-out ones.</p></div>
+        <div class="tablewrap"><table class="wraph" id="gate-depth"></table></div>
+        <p class="note">Agreement: share of depth points matching the baseline surfaces. All-clear counts are before → after the safeguard, of 5 held-out scenes; with nothing changed, an all-clear from a capture that could not have shown a change becomes "Not verified".</p></div>
+      <div class="card"><div class="card-head"><h3>Safeguard: no restyle flood from bad exposure</h3><p>Under strong under- or overexposure the colour comparison broke and flagged most surfaces as restyled. Clipped or crushed pixels and frames the colour fit cannot model now give no appearance evidence, and a clean verdict is withheld when most colours could not be compared. Held-out scenes with changes, safeguard off → on.</p></div>
+        <div class="tablewrap"><table class="wraph" id="gate-expo"></table></div></div>
+    </div>
+    <div class="card"><div class="card-head"><h3>The same study on PASLCD, with the authors' code</h3><p>A kit for a GPU machine. It runs the official O-SCD (online) and MV3DCD (offline) on degraded copies of PASLCD, patched only to save their continuous change maps, and scores them with these metrics.</p></div>
+      <pre class="cmd">cd scene-change-3d &amp;&amp; export WORK=/scratch/$USER/scd
+bash gpu/setup.sh                          # envs, official code + patch, PASLCD
+bash gpu/make_jobs.sh &gt; "$WORK/jobs.txt"   # method × scene × stressor × level
+sbatch --array=1-$(wc -l &lt; "$WORK/jobs.txt")%8 --export=ALL,WORK=$WORK gpu/array.sbatch
+bash gpu/report.sh                         # same report, for PASLCD</pre>
+      <p class="note">Details in <a href="https://github.com/shekharashishraj/watermark_service/blob/claude/elegant-shannon-gjj5hd/scene-change-3d/gpu/README.md"><code>gpu/README.md</code></a>. The full report for the harness is <a href="https://github.com/shekharashishraj/watermark_service/blob/claude/elegant-shannon-gjj5hd/scene-change-3d/ROBUSTNESS.md"><code>ROBUSTNESS.md</code></a>.</p></div>
+  </section>
+
+  <section id="viewer">
+    <div class="sec-head"><div class="eyebrow">Development scene s100 mixed</div><h2>3D inspection</h2>
+      <p class="lede">The baseline map with this visit's findings. Red boxes are missing items, green are added, blue arrows are moves, amber are restyles, grey dashed boxes were not checked. Select a change to fly to it.</p>
+      <p class="note">Where the images come from: there is no real video. The harness generates the apartment (<code>harness/scene.py</code>), plans a walk through it (<code>walkthrough.py</code>), and ray-casts every frame on the CPU (<code>raycast.py</code>). "This visit" is a frame of the second rendered walk; "Baseline" is our 3D map of the first walk, rendered from the same viewpoint.</p></div>
+    <div class="viewer-grid">
+      <div class="viewer" id="viewer-host" aria-label="3D view of the baseline map with detected changes">
+        <div class="layers" id="layers"></div>
+        <div class="hint">drag to orbit · right-drag to pan · scroll to zoom</div>
+      </div>
+      <div class="changes" id="changes"></div>
+    </div>
+  </section>
+
+  <section id="oscd">
+    <div class="sec-head"><div class="eyebrow">Paper re-implementation</div><h2>O-SCD: online 3D scene change detection</h2>
+      <p class="lede">Galappaththige et al., CVPR 2026 (<a href="https://arxiv.org/abs/2511.12370">arXiv:2511.12370</a>, <a href="https://github.com/Chumsy0725/O-SCD">official code</a>). It detects changes from RGB frames alone against a reference Gaussian splat, fusing noisy per-frame cues into a 3D change field. Implemented in <code>scene_change/oscd.py</code> with the paper's hyperparameters and the real SAM 2.1 encoder running on CPU.</p></div>
+    <div class="steps">
+      <div class="step"><h3>Locate each frame</h3><p>Match keypoints against the 4 best reference keyframes, PnP-RANSAC, then pose refinement.</p>
+        <div class="same"><b>Same</b><span>Mutual-NN matching at cosine 0.82, F-matrix outlier removal, top-4 keyframes</span></div>
+        <div class="diff"><b>Adapted</b><span>SIFT instead of XFeat, 3D points from reference depth, odometry fallback when PnP fails</span></div></div>
+      <div class="step"><h3>Change cues</h3><p>Render the reference at that pose and compare: C = C<sub>pixel</sub> + C<sub>feature</sub>.</p>
+        <div class="same"><b>Same</b><span>0.8·L1 + 0.2·(1 − SSIM), SAM 2.1 hiera-tiny embeddings, the official renormalisation</span></div>
+        <div class="diff"><b>Adapted</b><span>ONNX export of the encoder on CPU, about 1 s per image</span></div></div>
+      <div class="step"><h3>Change field</h3><p>Reference Gaussians carry a learnable change value, trained online with the self-supervised loss.</p>
+        <div class="same"><b>Same</b><span>16 Adam steps per frame, lr 0.0025, 67% replay of past frames, mask where M &gt; 0.5</span></div>
+        <div class="diff"><b>Adapted</b><span>Shapes frozen so rendering is linear (exact gradient without a GPU rasteriser); no densification</span></div></div>
+      <div class="step"><h3>Scene update</h3><p>Remove Gaussians inside changed regions and rebuild those regions from the new visit.</p>
+        <div class="same"><b>Same</b><span>Prune Gaussians blended into eroded change pixels in more than one view</span></div>
+        <div class="diff"><b>Adapted</b><span>Rebuild from RGB-D instead of 5,000 photometric steps; keep surfaces hidden behind new objects</span></div></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><div class="card-head"><h3>O-SCD frame F1 by configuration</h3><p>Development scene. The black line marks this prototype (all flags). Striped rows are still running.</p></div><div class="bars" id="chart-oscd-f1"></div></div>
+      <div class="card"><div class="card-head"><h3>O-SCD pixels flagged on no-change frames</h3><p>Lower is better. The prototype flags 0.05%.</p></div><div class="bars" id="chart-oscd-far"></div>
+        <details class="data"><summary>Show data</summary><div class="tablewrap"><table id="table-oscd"></table></div></details></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Why it struggles here</h3><p>Three frames: a close-up of floorboards with no change, a room with no change, and a room with a removed table, lamp and side table.</p></div>
+      <div class="cues"><div class="cue-cols"><span>Inspection frame</span><span>Reference render</span><span>Pixel cue</span><span>SAM 2.1 feature cue</span><span>Combined cue</span><span>True change</span></div>
+        <img src="__CUES__" alt="Three rows of six panels: inspection frame, reference render, pixel cue, feature cue, combined cue and ground-truth change mask. The cues are bright across unchanged texture."></div>
+      <ul class="plain">
+        <li><b>Lighting differs between visits.</b> The second walkthrough is 23% darker, with different room lamps. The paper corrects lighting only in its scene-update step, so both cues fire on unchanged surfaces. Global exposure matching recovers part of it.</li>
+        <li><b>Our reference renders are blurrier than a trained 3DGS.</b> The depth-fused map cannot show floorboard grooves, which the pixel and feature cues read as change. A perfect render raises F1 but not the false alarms, because lighting still differs.</li>
+        <li><b>Feature-based localization is weak on these images.</b> At 160×120 with low texture, 28% of frames fail PnP and fall back on odometry. Real phone video has far more texture.</li>
+      </ul>
+    </div>
+    <div class="grid2">
+      <div class="card"><div class="card-head"><h3>Scene update</h3><p>Fidelity of the map to the new visit (PSNR on its frames, higher is better).</p></div>
+        <div class="tablewrap"><table id="table-update"></table></div>
+        <p class="note">With correct change masks the update repairs changed regions (+8.3 dB) and leaves the rest alone. Noisy masks rebuild most of the map.</p></div>
+      <div class="card"><div class="card-head"><h3>Run the official code on this harness</h3><p>Writes a scenario in the official data layout (COLMAP model, reference .ply, true change masks) for a GPU machine, then scores its masks with the same metrics.</p></div>
+        <pre class="cmd">python -m scene_change export-oscd runs/s003_mixed --out runs/s003_mixed/oscd_data
+python oscd.py --source_path runs/s003_mixed/oscd_data ...   # official repo, on a GPU</pre>
+        <p class="note">License check: the official repository has no license file and its files carry Inria's non-commercial terms. This implementation shares no code with it.</p></div>
+    </div>
+  </section>
+
+  <section id="code">
+    <div class="sec-head"><div class="eyebrow">scene-change-3d/</div><h2>Code</h2>
+      <p class="lede" id="code-lede"></p></div>
+    <div class="card"><div class="tablewrap"><table id="table-code"></table></div></div>
+    <pre class="cmd">python -m scene_change generate --seed 3 --kind mixed --out runs/s003_mixed
+python -m scene_change inspect runs/s003_mixed --out runs/s003_mixed/result --oscd
+python -m scene_change.harness.benchmark --out runs/bench --seeds 0 1 2 3 4
+python -m scene_change.harness.robustness --bench runs/bench --out runs/robust
+python -m scene_change.harness.robustness_report --runs runs/robust --out ROBUSTNESS.md
+pytest            # 19 fast tests; pytest -m slow adds an end-to-end run</pre>
+  </section>
+
+  <section id="next">
+    <div class="sec-head"><div class="eyebrow">Status</div><h2>Status and next</h2></div>
+    <div class="grid2">
+      <div class="card"><h3>Running</h3><ul class="plain" id="running"></ul></div>
+      <div class="card"><h3>Next</h3><ul class="plain">
+        <li id="next-fp">Look at the remaining confirmed false alarms on held-out scenes one by one.</li>
+        <li>Cut restyle flags that are not real changes: most come from lamps switched on or off between visits.</li>
+        <li>Run the GPU kit (<code>gpu/</code>): official O-SCD and MV3DCD on PASLCD under the same stressors, for the proposal's reproduction step.</li>
+        <li>Try the pipeline on a real phone capture (iPhone LiDAR) of one room.</li>
+        <li>Keep the baseline current after each visit with the scene-update step.</li>
+      </ul></div>
+    </div>
+    <div class="callout info"><h3>On GitHub</h3><p class="note">Branch <a href="https://github.com/shekharashishraj/watermark_service/tree/claude/elegant-shannon-gjj5hd"><code>claude/elegant-shannon-gjj5hd</code></a> in <code>shekharashishraj/watermark_service</code>, folder <code>scene-change-3d/</code>.</p>
+      <p class="note mono" id="commits"></p></div>
+  </section>
+
+  <footer>Built from the session's result files. All scores come from the synthetic harness (160×120 RGB-D, CPU only) and are not comparable in value to numbers reported on PASLCD.</footer>
+</div>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script id="page-data" type="application/json">__DATA__</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function () {
+  const D = JSON.parse(document.getElementById("page-data").textContent);
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+  const f3 = (x) => (x == null ? "–" : x.toFixed(3));
+  const pct = (x, d) => (x == null ? "–" : (100 * x).toFixed(d == null ? (x < 0.01 ? 2 : 1) : d) + "%");
+
+  // ---------- tally ----------
+  const benchDone = new Set(D.bench.map((r) => r.scene)).size;
+  const heldOurs = D.bench.filter((r) => r.method === "ours");
+  const avg = (a) => (a.length ? a.reduce((p, q) => p + q, 0) / a.length : null);
+  const heldRecall = avg(heldOurs.filter((r) => r.recall != null).map((r) => r.recall));
+  const heldFp = avg(heldOurs.map((r) => r.fp_conf));
+  const tally = [["Python modules", D.code.length, `${D.total_lines.toLocaleString()} lines`],
+                 ["Changed objects found", heldRecall == null ? "37 / 38" : `${Math.round(100 * heldRecall)}%`, heldRecall == null ? "development scenes" : "held-out so far · 37 of 38 on dev"],
+                 ["Confirmed false alarms", heldFp == null ? "0" : `${heldFp.toFixed(1)} / visit`, heldFp == null ? "development scenes" : "held-out so far · 0 on dev"],
+                 ["Benchmark scenes scored", `${benchDone} / 15`, "held-out seeds"],
+                 ["O-SCD configurations", `${D.oscd.filter((o) => o.done).length} / ${D.oscd.length}`, "evaluated"]];
+  $("tally").innerHTML = tally.map(([k, v, s]) => `<div><span class="eyebrow">${k}</span><b>${v}</b><small>${s}</small></div>`).join("");
+
+  const RP = D.robust_progress || {done: false, records: 0, counts: {}, expected: {}};
+  // ---------- checklist ----------
+  const items = [
+    ["3D baseline from the first walkthrough", "ok", "Done", "RGB-D fused into about 190k surfel Gaussians in 10 s per apartment, exported as a standard 3DGS .ply."],
+    ["Localize each new walkthrough", "ok", "Done", "Median error 1.3 to 2.2 cm on development scenes, including drift correction that is kept only where it helps."],
+    ["Detect and show changes, report unchecked areas", "ok", "Done", `Missing, added, moved and restyled items. 37 of 38 visible changes found with no confirmed false alarms on development scenes${heldRecall == null ? "" : `; ${Math.round(100 * heldRecall)}% found and ${heldFp.toFixed(1)} confirmed false alarms per visit on held-out scenes so far`}. Every object never seen again is reported as not checked.`],
+    ["Web interface on the 3D model", "ok", "Done", "One HTML report per visit: verdict, then/now image pairs, room coverage, unchecked areas and a 3D viewer (below)."],
+    ["Evaluation against a 2D video comparison", benchDone >= 15 ? "ok" : "run", benchDone >= 15 ? "Done" : "Running",
+     `Frame IoU and F1, false alarms, object recall and processing time on ${benchDone} held-out scenes. Frame F1 ${avg(D.bench.filter((r) => r.method === "ours" && r.f1 != null).map((r) => r.f1)).toFixed(3)} for this prototype vs ${avg(D.bench.filter((r) => r.method === "video2d" && r.f1 != null).map((r) => r.f1)).toFixed(3)} for 2D video comparison.`],
+    ["O-SCD paper, implemented and compared", "ok", "Done", `All four stages implemented with SAM 2.1 on CPU. ${D.oscd.filter((o) => o.done).length} configurations studied; as published it scores frame F1 ${avg(D.bench.filter((r) => r.method === "oscd" && r.f1 != null).map((r) => r.f1)).toFixed(3)} on held-out scenes.`],
+    ["Stress tests with severity sweeps", RP.done ? "ok" : "run", RP.done ? "Done" : "Running",
+     `Motion blur, under- and overexposure, relighting, depth noise, lost coverage, fewer views and map compression at 2 to 5 severities each, on held-out scenes, for all four methods. ${RP.records} runs scored so far.`],
+    ["Calibration and failure analysis", RP.done ? "ok" : "run", RP.done ? "Done" : "Running",
+     "Reliability diagrams, ECE, threshold sweeps, confidently wrong errors, isotonic maps fitted on clean scenes and tested under stress; false positives and misses split by where and what."],
+    ["Official code on PASLCD", "warn", "Needs a GPU",
+     "Kit ready in gpu/: degrades PASLCD the same way, runs the authors' O-SCD (online) and MV3DCD (offline) with a small patch that saves their change scores, and scores them with the same report."],
+  ];
+  $("checklist").innerHTML = items.map(([t, s, l, p]) =>
+    `<div class="check"><div class="check-top"><h3>${t}</h3><span class="pill ${s}">${l}</span></div><p>${p}</p></div>`).join("");
+
+  // ---------- tooltip ----------
+  const tip = $("tip");
+  function bindTip(el, html) {
+    const show = (x, y) => { tip.innerHTML = html; tip.classList.add("on"); const r = tip.getBoundingClientRect();
+      tip.style.left = Math.min(window.innerWidth - r.width - 8, Math.max(8, x + 12)) + "px"; tip.style.top = Math.max(8, y - r.height - 10) + "px"; };
+    el.addEventListener("mousemove", (e) => show(e.clientX, e.clientY));
+    el.addEventListener("mouseleave", () => tip.classList.remove("on"));
+    el.addEventListener("focus", () => { const r = el.getBoundingClientRect(); show(r.left + r.width / 2, r.top); });
+    el.addEventListener("blur", () => tip.classList.remove("on"));
+  }
+
+  // ---------- bar chart (HTML) ----------
+  function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return v; }
+  function bars(el, rows, opt) {
+    const vals = rows.filter((r) => r.value != null).map((r) => r.value).concat(opt.ref != null ? [opt.ref] : []);
+    const max = opt.max || niceMax(Math.max(...vals) * 1.05);
+    const ticks = opt.ticks || [0, 0.25, 0.5, 0.75, 1].map((t) => t * max);
+    const grid = `<div class="gridlines">${ticks.map((t) => `<i style="left:${100 * t / max}%"></i>`).join("")}</div>`;
+    el.innerHTML = rows.map((r, k) => {
+      const w = r.value == null ? null : Math.max(0.4, 100 * r.value / max);
+      const bar = r.value == null ? '<div class="bar pending"></div>' : `<div class="bar ${r.hi ? "hi" : ""}" style="width:${w}%"></div>`;
+      const ref = opt.ref != null ? `<div class="refline" style="left:${100 * opt.ref / max}%"></div>` : "";
+      return `<div class="bar-row" tabindex="0" data-k="${k}"><div class="lbl"><span>${esc(r.label)}</span><span>${r.value == null ? "running" : opt.fmt(r.value)}</span></div><div class="track">${grid}${ref}${bar}</div></div>`;
+    }).join("") + `<div class="axis">${ticks.map((t) => `<span style="left:${100 * t / max}%">${opt.fmt(t, true)}</span>`).join("")}</div>`;
+    el.querySelectorAll(".bar-row").forEach((row) => { const r = rows[+row.dataset.k]; bindTip(row, r.tip || `${esc(r.label)}: ${r.value == null ? "running" : opt.fmt(r.value)}`); });
+  }
+
+  const M = D.methods;
+  bars($("chart-f1"), M.map((m) => ({label: m.label, value: m.f1, hi: m.hi, tip: `<b>${esc(m.label)}</b><br>F1 ${f3(m.f1)} · IoU ${f3(m.iou)}`})),
+       {fmt: (v, axis) => axis ? v.toFixed(v ? 2 : 0) : v.toFixed(3), max: 1, ticks: [0, 0.25, 0.5, 0.75, 1]});
+  const farMax = niceMax(Math.max(...M.map((m) => m.far)) * 1.05);
+  const axisPct = (v) => (100 * v).toFixed(farMax < 0.1 && v ? 1 : 0) + "%";
+  bars($("chart-far"), M.map((m) => ({label: m.label, value: m.far, hi: m.hi, tip: `<b>${esc(m.label)}</b><br>${pct(m.far, 3)} of pixels flagged on frames without change`})),
+       {fmt: (v, axis) => axis ? axisPct(v) : pct(v), max: farMax, ticks: [0, 1, 2, 3, 4, 5].map((t) => t * farMax / 5)});
+  $("table-methods").innerHTML = "<tr><th>Method</th><th class='num'>IoU</th><th class='num'>F1</th><th class='num'>False alarms</th></tr>" +
+    M.map((m) => `<tr><td>${esc(m.label)}</td><td class="num">${f3(m.iou)}</td><td class="num">${f3(m.f1)}</td><td class="num">${pct(m.far, 3)}</td></tr>`).join("");
+
+  // ---------- benchmark table ----------
+  const B = D.bench;
+  const byScene = {};
+  B.forEach((r) => { (byScene[r.scene] = byScene[r.scene] || {})[r.method] = r; });
+  const scenes = Object.keys(byScene).sort();
+  const cell = (r, k, f) => (r && r[k] != null ? f(r[k]) : "<span class='muted'>–</span>");
+  let rowsHtml = scenes.map((s) => { const o = byScene[s].ours, v = byScene[s].video2d, c = byScene[s].oscd;
+    return `<tr><td>${s}</td><td class="num">${cell(o, "f1", f3)}</td><td class="num">${cell(v, "f1", f3)}</td><td class="num">${cell(c, "f1", f3)}</td>` +
+      `<td class="num">${cell(o, "far", (x) => pct(x, 2))}</td><td class="num">${cell(v, "far", (x) => pct(x, 2))}</td><td class="num">${cell(c, "far", (x) => pct(x, 2))}</td>` +
+      `<td class="num">${cell(o, "recall", (x) => x.toFixed(2))}</td><td class="num">${cell(o, "fp_conf", (x) => x)}</td></tr>`; }).join("");
+  const mean = (arr) => { const a = arr.filter((x) => x != null); return a.length ? a.reduce((p, q) => p + q, 0) / a.length : null; };
+  const pick = (m, k, ch) => B.filter((r) => r.method === m && (!ch || r.kind !== "clean")).map((r) => r[k]);
+  if (scenes.length) rowsHtml += `<tr class="summary"><td>Mean</td><td class="num">${f3(mean(pick("ours", "f1", 1)))}</td><td class="num">${f3(mean(pick("video2d", "f1", 1)))}</td><td class="num">${f3(mean(pick("oscd", "f1", 1)))}</td>` +
+    `<td class="num">${pct(mean(pick("ours", "far")), 2)}</td><td class="num">${pct(mean(pick("video2d", "far")), 2)}</td><td class="num">${mean(pick("oscd", "far")) == null ? "–" : pct(mean(pick("oscd", "far")), 2)}</td>` +
+    `<td class="num">${f3(mean(pick("ours", "recall", 1)))}</td><td class="num">${(mean(pick("ours", "fp_conf")) ?? 0).toFixed(1)}</td></tr>`;
+  $("table-bench").innerHTML = "<tr><th>Scene</th><th class='num'>F1 ours</th><th class='num'>F1 2D</th><th class='num'>F1 O-SCD</th><th class='num'>False alarms ours</th><th class='num'>2D</th><th class='num'>O-SCD</th><th class='num'>Recall ours</th><th class='num'>Confirmed FPs</th></tr>" +
+    (rowsHtml || "<tr><td colspan='9' class='muted'>First scenes are still running.</td></tr>");
+  $("bench-status").textContent = `New random apartments (seeds 0 to 4) never used during development, three scenario kinds each. ${scenes.length} of 15 scenes scored so far; O-SCD joins once its configuration study finishes.`;
+  $("bench-note").textContent = D.bench_v1.length
+    ? "Clean scenes have no changes, so they only contribute false alarms. The held-out scenes exposed two weaknesses: large drift partway through a walk, and door jambs and frame edges read as removed surfaces. The table below shows this prototype before and after each fix."
+    : "Clean scenes have no changes, so they only contribute false alarms.";
+  if (D.bench_v1.length) {
+    const v1 = D.bench_v1, v2 = B.filter((r) => r.method === "ours");
+    const m = (rows, k, ch) => mean(rows.filter((r) => !ch || r.kind !== "clean").map((r) => r[k]));
+    const line = (label, rows) => `<tr><td>${label}</td><td class="num">${rows.length}</td><td class="num">${f3(m(rows, "f1", 1))}</td><td class="num">${pct(m(rows, "far"), 2)}</td><td class="num">${f3(m(rows, "recall", 1))}</td><td class="num">${(m(rows, "fp_conf") ?? 0).toFixed(1)}</td><td class="num">${(m(rows, "reg_cm") ?? 0).toFixed(1)} cm</td></tr>`;
+    const mid = D.bench_v2 || [];
+    $("table-fix").innerHTML = "<tr><th>This prototype, held-out</th><th class='num'>Scenes</th><th class='num'>F1</th><th class='num'>False alarms</th><th class='num'>Recall</th><th class='num'>Confirmed FPs / visit</th><th class='num'>Median pose error</th></tr>" +
+      line("Before fixes", v1) + (mid.length ? line("Localization fix", mid) : "") +
+      (v2.length ? line(mid.length ? "Localization + silhouette-edge fix (current)" : "After the fix", v2) : "");
+    $("fix-wrap").hidden = false;
+  }
+
+  // ---------- dev objects ----------
+  $("table-objects").innerHTML = "<tr><th>Scene</th><th class='num'>Found</th><th class='num'>Confirmed false alarms</th><th class='num'>Wrong review flags</th><th class='num'>Pixel F1</th></tr>" +
+    D.dev_objects.map((r) => `<tr><td>${r.scene}</td><td class="num">${r.visible ? `${r.found} / ${r.visible}` : "no changes"}</td><td class="num">${r.fp_conf}</td><td class="num">${r.fp_review}</td><td class="num">${r.f1 == null ? "–" : r.f1.toFixed(3)}</td></tr>`).join("");
+
+  // ---------- dumbbell ----------
+  const R = D.registration, rmax = 10;
+  $("chart-reg").innerHTML = R.map((r, k) => {
+    const x = (v) => (100 * v / rmax);
+    const lo = Math.min(r.before, r.after), hi = Math.max(r.before, r.after);
+    const ghost = r.ungated > r.before + 0.5 ? `<div class="dot ghost" style="left:${x(r.ungated)}%"></div><div class="v" style="left:${x(r.ungated)}%">${r.ungated} ungated</div>` : "";
+    return `<div class="dumb-row" tabindex="0" data-k="${k}"><span class="room">${r.room}</span><div class="dumb-track">` +
+      `<div class="gridlines">${[0, 2, 4, 6, 8, 10].map((t) => `<i style="left:${x(t)}%"></i>`).join("")}</div>` +
+      `<div class="seg" style="left:${x(lo)}%;width:${x(hi - lo)}%"></div>${ghost}` +
+      `<div class="dot before" style="left:${x(r.before)}%"></div><div class="dot after" style="left:${x(r.after)}%"></div>` +
+      (Math.abs(r.before - r.after) > 0.6 ? `<div class="v" style="left:${x(r.before)}%">${r.before}</div><div class="v" style="left:${x(r.after)}%">${r.after}</div>` : `<div class="v" style="left:${x(r.after)}%">${r.after}</div>`) +
+      `</div></div>`; }).join("") +
+    `<div class="dumb-row"><span></span><div class="axis">${[0, 2, 4, 6, 8, 10].map((t) => `<span style="left:${100 * t / rmax}%">${t}${t === 10 ? " cm" : ""}</span>`).join("")}</div></div>`;
+  $("chart-reg").querySelectorAll(".dumb-row[data-k]").forEach((row) => { const r = R[+row.dataset.k];
+    bindTip(row, `<b>${r.room}</b><br>No correction ${r.before} cm · gated ${r.after} cm · first version ${r.ungated} cm`); });
+
+  // ---------- O-SCD ----------
+  const O = D.oscd, ours = M[0];
+  bars($("chart-oscd-f1"), O.map((o) => ({label: o.label, value: o.f1, hi: false, tip: o.done ? `<b>${esc(o.label)}</b><br>F1 ${f3(o.f1)} · IoU ${f3(o.iou)}<br>median pose error ${o.pose_cm.toFixed(1)} cm` : `${esc(o.label)}: running`})),
+       {fmt: (v, axis) => axis ? v.toFixed(v ? 2 : 0) : v.toFixed(3), max: 1, ticks: [0, 0.25, 0.5, 0.75, 1], ref: ours.f1});
+  bars($("chart-oscd-far"), O.map((o) => ({label: o.label, value: o.far, hi: false})),
+       {fmt: (v, axis) => axis ? (100 * v).toFixed(0) + "%" : pct(v), max: 1, ticks: [0, 0.25, 0.5, 0.75, 1]});
+  $("table-oscd").innerHTML = "<tr><th>Configuration</th><th class='num'>IoU</th><th class='num'>F1</th><th class='num'>False alarms</th><th class='num'>Pose error</th><th class='num'>Frames/s</th></tr>" +
+    O.map((o) => `<tr><td>${esc(o.label)}</td>` + (o.done ? `<td class="num">${f3(o.iou)}</td><td class="num">${f3(o.f1)}</td><td class="num">${pct(o.far, 1)}</td><td class="num">${o.pose_cm.toFixed(1)} cm</td><td class="num">${o.fps.toFixed(2)}</td>` : `<td class="muted" colspan="5">running</td>`) + "</tr>").join("");
+  $("table-update").innerHTML = "<tr><th>Map</th><th class='num'>Changed pixels</th><th class='num'>Unchanged</th><th>Rebuilt</th></tr>" +
+    D.update.map((u) => `<tr><td>${u.label}</td><td class="num">${u.changed.toFixed(1)} dB</td><td class="num">${u.unchanged.toFixed(1)} dB</td><td class="muted" style="white-space:normal">${u.note || "–"}</td></tr>`).join("");
+
+  // ---------- code ----------
+  $("code-lede").textContent = `${D.code.length} files, ${D.total_lines.toLocaleString()} lines of Python. NumPy, SciPy and OpenCV only; ONNX Runtime is optional for SAM 2.1.`;
+  $("table-code").innerHTML = "<tr><th>File</th><th class='num'>Lines</th><th>What it does</th></tr>" +
+    D.code.map((c) => `<tr><td class="mono">${c.path}</td><td class="num">${c.lines}</td><td style="white-space:normal">${esc(c.what)}</td></tr>`).join("");
+  $("commits").innerHTML = D.commits.map(esc).join("<br>");
+  const oscdHeld = new Set(B.filter((r) => r.method === "oscd").map((r) => r.scene)).size;
+  const running = [];
+  if (oscdHeld < 10) running.push(`O-SCD as published on the held-out benchmark: ${oscdHeld} of 10 scenes scored.`);
+  if (!RP.done) {
+    const c = RP.counts || {}, e = RP.expected || {};
+    running.push(`Robustness sweeps, this prototype and 2D video comparison: ${c.fast || 0} of ${e.fast} runs.`);
+    running.push(`Robustness sweeps, O-SCD online and offline: ${c.oscd || 0} of ${e.oscd} runs (SAM 2.1 on CPU, two processes, about 7 minutes per level each).`);
+    running.push(`Map compression and depth degradation sweeps: ${(c.compress || 0) + (c.depth || 0)} of ${e.compress + e.depth} runs.`);
+  }
+  if (!running.length) running.push("Nothing. All sweeps are finished and the results are committed.");
+  $("running").innerHTML = running.map((t) => `<li>${esc(t)}</li>`).join("");
+  const fpScenes = B.filter((r) => r.method === "ours" && r.fp_conf > 0);
+  if (B.some((r) => r.method === "ours")) $("next-fp").textContent = fpScenes.length
+    ? `Look at the ${fpScenes.reduce((p, r) => p + r.fp_conf, 0)} remaining confirmed false alarms on held-out scenes (${fpScenes.map((r) => r.scene).join(", ")}) one by one.`
+    : "Keep the held-out scenes free of confirmed false alarms as detection changes.";
+
+  // ---------- robustness ----------
+  (function robustness() {
+    const R = D.robust;
+    if (!R || !R.methods) { $("robust").hidden = true; return; }
+    const COL = {"ours": "--m-ours", "oscd-online": "--m-on", "oscd-offline": "--m-off", "video2d": "--m-2d"};
+    const SHAPE = {"ours": "circle", "oscd-online": "square", "oscd-offline": "triangle", "video2d": "diamond"};
+    const methods = R.methods.filter((m) => COL[m]);
+    const shown = new Set(methods);
+    const label = (m) => R.labels[m] || m;
+    const METRICS = {
+      F1: {name: "Frame F1", sub: "Frame F1, PASLCD protocol. Higher is better.", bounded: true},
+      FA: {name: "False alarms", sub: "Share of pixels flagged on frames without any change. Lower is better.", pct: true},
+      recall: {name: "Changes found", sub: "Share of visible changes with at least a quarter of their pixels flagged.", bounded: true},
+      precision: {name: "Pixel precision", sub: "Flagged pixels that really changed. Falls when false positives grow.", bounded: true},
+      recall_px: {name: "Pixel recall", sub: "Changed pixels that were flagged. Falls when changes are missed.", bounded: true},
+      ece: {name: "Calibration error", sub: "Expected calibration error of the change scores. Lower is better."},
+    };
+    let metric = "F1";
+    const X = (s, v) => s === "dark" ? -v : (["blur", "coverage", "sparse", "compress"].includes(s) ? +(100 * v).toFixed(3) : v);
+    const XF = (s, x) => ({blur: `${x}% blur`, dark: `−${x} EV`, bright: `+${x} EV`, relight: `×${x} lighting change`,
+                           coverage: `${x}% of views removed`, sparse: `${x}% of views removed`, compress: `${x} cm Gaussians`,
+                           depth: `×${x} depth noise`})[s] || String(x);
+    const isRef = (s, v) => v === R.reference[s];
+    const val = (k, v) => v == null ? "–" : (METRICS[k] && METRICS[k].pct ? pct(v) : v.toFixed(3));
+    const curve = (m, s, k) => (R.curves[`${m}|${s}|${k}`] || []).filter((p) => p[1] != null);
+    const nice = (v) => { if (!(v > 0)) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); for (const q of [1, 2, 2.5, 5, 10]) if (q * p >= v) return q * p; return v; };
+    const tickFmt = (k, t, ymax) => METRICS[k].pct ? (100 * t).toFixed(ymax < 0.05 ? 1 : 0) + "%" : (t === 0 ? "0" : t.toFixed(ymax < 0.1 ? 2 : (ymax <= 1 ? (t * 10 % 1 ? 2 : 1) : 0)));
+    const numFmt = (x) => (Math.round(x * 100) / 100).toString();
+
+    function marker(shape, x, y, r, c, extra) {
+      const a = `fill="${c}" stroke="var(--surface)" stroke-width="2" paint-order="stroke" ${extra || ""}`;
+      if (shape === "square") return `<rect x="${x - 0.9 * r}" y="${y - 0.9 * r}" width="${1.8 * r}" height="${1.8 * r}" rx="1" ${a}/>`;
+      if (shape === "triangle") return `<path d="M${x},${y - 1.2 * r}L${x + 1.15 * r},${y + 0.85 * r}L${x - 1.15 * r},${y + 0.85 * r}Z" ${a}/>`;
+      if (shape === "diamond") return `<path d="M${x},${y - 1.25 * r}L${x + 1.25 * r},${y}L${x},${y + 1.25 * r}L${x - 1.25 * r},${y}Z" ${a}/>`;
+      return `<circle cx="${x}" cy="${y}" r="${r}" ${a}/>`;
+    }
+    const placeTip = (x, y) => { const r = tip.getBoundingClientRect();
+      tip.style.left = Math.min(window.innerWidth - r.width - 8, Math.max(8, x + 14)) + "px";
+      tip.style.top = Math.max(8, Math.min(window.innerHeight - r.height - 8, y - r.height - 12)) + "px"; };
+    const hideTip = () => { tip.classList.remove("on", "wide"); };
+
+    // ---- small multiples ----
+    const W = 320, H = 196, ml = 38, mr = 12, mt = 10, mb = 24;
+    function yMax() {
+      let mx = 0;
+      R.stressors.forEach((s) => methods.filter((m) => shown.has(m)).forEach((m) => curve(m, s, metric).forEach((p) => { mx = Math.max(mx, p[3] != null ? p[3] : p[1], p[1]); })));
+      if (METRICS[metric].bounded) return mx > 0.6 ? 1 : Math.max(0.1, nice(mx * 1.1));
+      return nice(mx * 1.1);
+    }
+    function mini(s, ymax) {
+      const lv = R.levels[s], xs = lv.map((v) => X(s, v));
+      const x0 = Math.min(...xs), x1 = Math.max(...xs);
+      const px = (x) => ml + (x1 === x0 ? 0.5 : (x - x0) / (x1 - x0)) * (W - ml - mr);
+      const py = (y) => mt + (1 - Math.min(y, ymax) / ymax) * (H - mt - mb);
+      const n = ymax <= 0.1 ? 4 : 4, ticks = Array.from({length: n + 1}, (_, i) => ymax * i / n);
+      let g = "";
+      ticks.forEach((t) => { g += `<line class="gl" x1="${ml}" x2="${W - mr}" y1="${py(t)}" y2="${py(t)}"/><text x="${ml - 6}" y="${py(t) + 3.5}" text-anchor="end">${tickFmt(metric, t, ymax)}</text>`; });
+      g += `<line class="ax" x1="${ml}" x2="${W - mr}" y1="${py(0)}" y2="${py(0)}"/>`;
+      xs.forEach((x, k) => { g += `<text x="${px(x)}" y="${H - 7}" text-anchor="middle"${isRef(s, lv[k]) ? ' class="ref"' : ""}>${numFmt(x)}</text>`; });
+      const series = methods.filter((m) => shown.has(m)).map((m) => ({m, pts: curve(m, s, metric)})).filter((q) => q.pts.length);
+      series.forEach(({m, pts}) => {
+        const c = `var(${COL[m]})`;
+        pts = pts.filter((p) => p[4] >= 3);          // an interval over fewer than 3 scenes says little
+        if (pts.length < 2) return;
+        const top = pts.map((p) => `${px(X(s, p[0]))},${py(p[3] != null ? p[3] : p[1])}`);
+        const bot = pts.slice().reverse().map((p) => `${px(X(s, p[0]))},${py(Math.max(p[2] != null ? p[2] : p[1], 0))}`);
+        g += `<polygon points="${top.concat(bot).join(" ")}" fill="${c}" fill-opacity="0.1" stroke="none"/>`;
+      });
+      series.forEach(({m, pts}) => {
+        const c = `var(${COL[m]})`;
+        g += `<polyline points="${pts.map((p) => `${px(X(s, p[0]))},${py(p[1])}`).join(" ")}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+        pts.forEach((p) => { g += marker(SHAPE[m], px(X(s, p[0])), py(p[1]), 4, c); });
+      });
+      g += `<line class="cross" x1="0" x2="0" y1="${mt}" y2="${H - mb}" visibility="hidden"/>`;
+      const svg = `<svg class="plot" viewBox="0 0 ${W} ${H}" tabindex="0" role="img" aria-label="${esc(R.titles[s])}: ${esc(METRICS[metric].name)} against ${esc(R.xlabels[s])}. Use the arrow keys to read values.">${g}</svg>`;
+      return {svg, xs, lv, px, series};
+    }
+    function hover(el, s, info) {
+      const svg = el.querySelector("svg"), cross = svg.querySelector(".cross");
+      let k = 0;
+      const show = (idx, cx, cy) => {
+        k = idx;
+        const x = info.px(info.xs[idx]);
+        cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.setAttribute("visibility", "visible");
+        const lvl = info.lv[idx];
+        const rows = info.series.map(({m, pts}) => { const p = pts.find((q) => q[0] === lvl);
+          return p ? `<div class="tiprow"><span><i class="tipkey" style="background:var(${COL[m]})"></i>${esc(label(m))}</span><span>${val(metric, p[1])}</span></div>` : ""; }).join("");
+        tip.innerHTML = `<b>${esc(R.titles[s])}: ${isRef(s, lvl) ? "reference" : esc(XF(s, info.xs[idx]))}</b>${rows}`;
+        tip.classList.add("on", "wide");
+        placeTip(cx, cy);
+      };
+      const hide = () => { cross.setAttribute("visibility", "hidden"); hideTip(); };
+      const nearest = (sx) => { let b = 0; info.xs.forEach((x, i) => { if (Math.abs(info.px(x) - sx) < Math.abs(info.px(info.xs[b]) - sx)) b = i; }); return b; };
+      svg.addEventListener("mousemove", (e) => { const r = svg.getBoundingClientRect(); show(nearest((e.clientX - r.left) * W / r.width), e.clientX, e.clientY); });
+      svg.addEventListener("mouseleave", hide);
+      const atPoint = () => { const r = svg.getBoundingClientRect(); return [r.left + info.px(info.xs[k]) * r.width / W, r.top + 12]; };
+      svg.addEventListener("focus", () => show(k, ...atPoint()));
+      svg.addEventListener("blur", hide);
+      svg.addEventListener("keydown", (e) => {
+        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+        e.preventDefault(); k = Math.max(0, Math.min(info.xs.length - 1, k + (e.key === "ArrowRight" ? 1 : -1))); show(k, ...atPoint());
+      });
+    }
+    function drawCharts() {
+      const ymax = yMax();
+      const host = $("robust-charts");
+      host.innerHTML = "";
+      R.stressors.forEach((s) => {
+        const info = mini(s, ymax);
+        const el = document.createElement("div"); el.className = "mini";
+        el.innerHTML = `<h4>${esc(R.titles[s])}</h4>${info.svg}<div class="xl">${esc(R.xlabels[s])}</div>`;
+        host.appendChild(el);
+        hover(el, s, info);
+      });
+      $("robust-sub").textContent = `${METRICS[metric].sub} Mean over ${R.seeds.length} held-out scene${R.seeds.length > 1 ? "s" : ""}; bands are 95% intervals where at least 3 scenes are in. The bold tick is the reference capture.`;
+      const cols = methods.filter((m) => shown.has(m));
+      $("robust-table").innerHTML = `<tr><th>Stressor</th><th>Level</th>${cols.map((m) => `<th class="num">${esc(label(m))}</th>`).join("")}</tr>` +
+        R.stressors.map((s) => R.levels[s].map((v) => `<tr><td>${esc(R.titles[s])}</td><td>${isRef(s, v) ? "reference" : esc(XF(s, X(s, v)))}</td>${cols.map((m) => { const p = curve(m, s, metric).find((q) => q[0] === v); return `<td class="num">${p ? val(metric, p[1]) : "–"}</td>`; }).join("")}</tr>`).join("")).join("");
+    }
+    $("robust-metric").innerHTML = Object.entries(METRICS).map(([k, o]) => `<button type="button" data-k="${k}" aria-pressed="${k === metric}">${o.name}</button>`).join("");
+    $("robust-metric").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; metric = b.dataset.k;
+      $("robust-metric").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b)); drawCharts(); });
+    $("robust-legend").innerHTML = methods.map((m) => `<label><input type="checkbox" data-m="${m}" checked><svg viewBox="0 0 22 12" aria-hidden="true"><line x1="0" x2="22" y1="6" y2="6" stroke="var(${COL[m]})" stroke-width="2"/>${marker(SHAPE[m], 11, 6, 3.5, `var(${COL[m]})`)}</svg>${esc(label(m))}</label>`).join("");
+    $("robust-legend").addEventListener("change", (e) => { const m = e.target.dataset.m; if (!m) return;
+      if (e.target.checked) shown.add(m); else if (shown.size > 1) shown.delete(m); else e.target.checked = true; drawCharts(); });
+    drawCharts();
+
+    // ---- boundaries ----
+    const worst = (s) => R.levels[s][R.levels[s].length - 1];
+    const f1At = (m, s, v) => { const p = curve(m, s, "F1").find((q) => q[0] === v); return p ? p[1] : null; };
+    $("robust-bounds").innerHTML = `<tr><th>Stressor</th>${methods.map((m) => `<th>${esc(label(m))}</th>`).join("")}</tr>` + R.stressors.map((s) =>
+      `<tr><td>${esc(R.titles[s])}</td>${methods.map((m) => { const b = R.boundaries[`${m}|${s}`];
+        if (!b) return "<td class='muted'>–</td>";
+        if (b.fail) return `<td class="fail">fails at ${esc(XF(s, X(s, b.fail[0])))} (${Math.round(100 * b.fail[1])}%)</td>`;
+        const r0 = f1At(m, s, R.reference[s]), r1 = f1At(m, s, worst(s));
+        const d = r0 && r1 != null ? ` (${r1 >= r0 ? "+" : "−"}${Math.abs(Math.round(100 * (r1 / r0 - 1)))}%)` : "";
+        return `<td class="hold">holds to ${esc(XF(s, X(s, worst(s))))}${d}</td>`; }).join("")}</tr>`).join("");
+
+    // ---- reliability ----
+    const relMethods = methods.filter((m) => R.reliability[`${m}|reference`]);
+    let relM = relMethods.includes("oscd-offline") ? "oscd-offline" : relMethods[0], relS = R.stressors.includes("dark") ? "dark" : R.stressors[0];
+    function relChart() {
+      const S = 280, m0 = 34, m1 = 10;
+      const p = (v) => m0 + v * (S - m0 - m1), q = (v) => S - m0 + 10 - v * (S - m0 - m1) - 10;
+      let g = "";
+      [0, 0.25, 0.5, 0.75, 1].forEach((t) => { g += `<line class="gl" x1="${p(0)}" x2="${p(1)}" y1="${q(t)}" y2="${q(t)}"/><text x="${p(0) - 6}" y="${q(t) + 3.5}" text-anchor="end">${t}</text><text x="${p(t)}" y="${S - 8}" text-anchor="middle">${t}</text>`; });
+      g += `<line class="ax" x1="${p(0)}" x2="${p(1)}" y1="${q(0)}" y2="${q(1)}" stroke-dasharray="0"/>`;
+      const sets = [["reference", "var(--ink)", "reference", "circle"], [relS, `var(${COL[relM]})`, `${R.titles[relS]}, most severe`, SHAPE[relM]]];
+      const pts = [];
+      sets.forEach(([key, c, name, shape]) => {
+        const rows = R.reliability[`${relM}|${key}`] || [];
+        if (!rows.length) return;
+        g += `<polyline points="${rows.map((r) => `${p(r[0])},${q(r[1])}`).join(" ")}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/>`;
+        rows.forEach((r) => { pts.push({x: p(r[0]), y: q(r[1]), html: `<b>${esc(name)}</b><div class="tiprow"><span>Mean score</span><span>${r[0].toFixed(2)}</span></div><div class="tiprow"><span>Actually changed</span><span>${pct(r[1])}</span></div><div class="tiprow"><span>Pixels</span><span>${r[2].toLocaleString()}</span></div>`});
+          g += marker(shape, p(r[0]), q(r[1]), 4, c); });
+      });
+      $("rel-chart").innerHTML = `<svg class="plot" viewBox="0 0 ${S} ${S}" role="img" aria-label="Reliability diagram for ${esc(label(relM))}">${g}</svg>
+        <div class="mlegend"><span><svg viewBox="0 0 22 12" aria-hidden="true"><line x1="0" x2="22" y1="6" y2="6" stroke="var(--ink)" stroke-width="2"/>${marker("circle", 11, 6, 3.5, "var(--ink)")}</svg> Reference</span>
+        <span><svg viewBox="0 0 22 12" aria-hidden="true"><line x1="0" x2="22" y1="6" y2="6" stroke="var(${COL[relM]})" stroke-width="2"/>${marker(SHAPE[relM], 11, 6, 3.5, `var(${COL[relM]})`)}</svg> ${esc(R.titles[relS])}, most severe</span></div>
+        <p class="xl note">x: mean change score in the bin · y: share of those pixels that changed</p>`;
+      const svg = $("rel-chart").querySelector("svg");
+      svg.addEventListener("mousemove", (e) => { const r = svg.getBoundingClientRect(); const sx = (e.clientX - r.left) * S / r.width, sy = (e.clientY - r.top) * S / r.height;
+        let b = null, bd = 400; pts.forEach((t) => { const d = (t.x - sx) ** 2 + (t.y - sy) ** 2; if (d < bd) { bd = d; b = t; } });
+        if (b) { tip.innerHTML = b.html; tip.classList.add("on", "wide"); placeTip(e.clientX, e.clientY); } else hideTip(); });
+      svg.addEventListener("mouseleave", hideTip);
+    }
+    const segs = (id, items, cur, fn) => { $(id).innerHTML = items.map(([k, t]) => `<button type="button" data-k="${k}" aria-pressed="${k === cur}">${esc(t)}</button>`).join("");
+      $(id).onclick = (e) => { const b = e.target.closest("button"); if (!b) return; $(id).querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b)); fn(b.dataset.k); }; };
+    if (relMethods.length) {
+      segs("rel-method", relMethods.map((m) => [m, label(m)]), relM, (k) => { relM = k; relChart(); });
+      segs("rel-stress", R.stressors.map((s) => [s, R.titles[s]]), relS, (k) => { relS = k; relChart(); });
+      relChart();
+    }
+    const refRow = (m) => R.table.find((r) => r.method === m) || {};
+    const atWorst = (m, s, k) => { const p = curve(m, s, k).find((q) => q[0] === worst(s)); return p ? p[1] : null; };
+    $("rel-table").innerHTML = "<tr><th>Method</th><th>Condition</th><th class='num'>ECE</th><th class='num'>ECE, recalibrated on clean scenes</th><th class='num'>AP</th><th class='num'>Confident false positives</th><th class='num'>Confident misses</th></tr>" +
+      relMethods.map((m) => [["reference", null]].concat(R.stressors.map((s) => [s, s])).map(([cond, s]) => {
+        const g = (k) => s ? atWorst(m, s, k) : refRow(m)[k];
+        const rc = (R.recalibrated_ece || {})[`${m}|${cond}`];
+        return `<tr><td>${esc(label(m))}</td><td>${s ? esc(R.titles[s]) + ", most severe" : "reference"}</td><td class="num">${f3(g("ece"))}</td><td class="num">${f3(rc)}</td><td class="num">${f3(g("ap"))}</td><td class="num">${pct(g("fp_conf"), 1)}</td><td class="num">${pct(g("fn_conf"), 1)}</td></tr>`;
+      }).join("")).join("");
+
+    // ---- offline vs online ----
+    const T = R.temporal || {};
+    if (T["oscd-online|reference"]) {
+      const conds = [["reference", "Reference"]].concat(R.stressors.filter((s) => T[`oscd-online|${s}`]).map((s) => [s, `${R.titles[s]}, most severe`]));
+      const tri = (a) => (a || [null, null, null]).map((v) => `<td class="num">${f3(v)}</td>`).join("");
+      $("oo-table").innerHTML = "<tr><th rowspan='2'>Condition</th><th colspan='3'>Online</th><th colspan='3'>Offline (refined)</th></tr><tr><th class='num'>early</th><th class='num'>middle</th><th class='num'>late</th><th class='num'>early</th><th class='num'>middle</th><th class='num'>late</th></tr>" +
+        conds.map(([k, t]) => `<tr><td>${esc(t)}</td>${tri(T[`oscd-online|${k}`])}${tri(T[`oscd-offline|${k}`])}</tr>`).join("");
+      $("oo-note").textContent = (D.robust_notes && D.robust_notes.offline_online) || "";
+    } else { $("oo-table").innerHTML = "<tr><td class='muted'>O-SCD sweeps still running.</td></tr>"; }
+
+    // ---- unobserved and compression ----
+    if (R.unobserved && R.unobserved.length) {
+      $("unobs-table").innerHTML = "<tr><th>Views removed</th><th class='num'>Changes in no kept frame</th><th class='num'>Reported as not checked</th></tr>" +
+        R.unobserved.map((r) => `<tr><td>${Math.round(100 * r.level)}% in stretches</td><td class="num">${r.lost}</td><td class="num">${r.flagged}${r.lost ? ` (${Math.round(100 * r.flagged / r.lost)}%)` : ""}</td></tr>`).join("");
+    } else { $("unobs-table").innerHTML = "<tr><td class='muted'>Coverage sweeps still running.</td></tr>"; }
+    if (R.compression && R.compression.rows.length) {
+      $("compress-table").innerHTML = "<tr><th>Method</th><th class='num'>Gaussian size</th><th class='num'>Gaussians</th><th class='num'>Small changes found</th><th class='num'>Large changes found</th><th class='num'>Frame F1</th></tr>" +
+        R.compression.rows.map((r) => `<tr><td>${esc(label(r.method))}</td><td class="num">${r.voxel_cm} cm</td><td class="num">${r.gaussians ? r.gaussians.toLocaleString() : "–"}</td><td class="num">${pct(r.small, 0)}</td><td class="num">${pct(r.large, 0)}</td><td class="num">${f3(r.F1)}</td></tr>`).join("");
+    } else { $("compress-card").hidden = true; }
+
+    // ---- safeguards ----
+    const G = D.robust_gates || {};
+    if (G.depth) {
+      $("gate-depth").innerHTML = "<tr><th>Depth noise</th><th class='num'>Agreement</th><th class='num'>F1</th><th class='num'>All-clear with 8 changes</th><th class='num'>All-clear, nothing changed</th></tr>" +
+        G.depth.levels.map((r) => `<tr><td>${r.depth_noise ? "×" + r.depth_noise : "none"}</td><td class="num">${Math.round(100 * r.inlier_min)}–${Math.round(100 * r.inlier_max)}%</td><td class="num">${f3(r.mixed_f1_mean)}</td><td class="num">${r.wrong_clean_before} → <b>${r.wrong_clean_after}</b> of 5</td><td class="num">${r.clean_scene_guest_ready_before} → ${r.clean_scene_guest_ready_after} of 5</td></tr>`).join("");
+    } else { $("gates").hidden = true; }
+    if (G.exposure) {
+      const lab = (r) => r.stressor === "none" ? "unmodified" : r.stressor === "relight" ? `lighting ×${r.level}` : `${r.level > 0 ? "+" : "−"}${Math.abs(r.level)} EV`;
+      $("gate-expo").innerHTML = "<tr><th>Capture</th><th class='num'>Frame F1</th><th class='num'>False-alarm pixels</th><th class='num'>Confirmed-only F1</th><th class='num'>Flagged</th></tr>" +
+        G.exposure.levels.filter((r) => r.stressor === "none" || Math.abs(r.level) >= 2 || (r.stressor === "relight" && r.level >= 2)).map((r) =>
+          `<tr><td>${lab(r)}</td><td class="num">${f3(r.F1_off)} → <b>${f3(r.F1_on)}</b></td><td class="num">${pct(r.FA_off, 1)} → <b>${pct(r.FA_on, 1)}</b></td><td class="num">${f3(r.F1_confirmed_off)} → ${f3(r.F1_confirmed_on)}</td><td class="num">${r.flagged_poor_exposure} of 5</td></tr>`).join("");
+    }
+
+    // ---- findings ----
+    $("robust-findings").innerHTML = (D.robust_findings || []).map((t) => `<li>${t}</li>`).join("") || "<li>Sweeps are still running.</li>";
+  })();
+
+  // ---------- change list ----------
+  const V = D.viewer, TYPE_VAR = {missing: "--missing", added: "--added", moved: "--moved", appearance: "--appearance"};
+  const list = $("changes");
+  let focusChange = (k) => list.querySelectorAll(".chg").forEach((el, j) => el.classList.toggle("active", j === k));
+  V.changes.forEach((c, k) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "chg";
+    const where = c.type === "moved" ? `moved ${c.moved_distance} m` : `${c.area_m2} m² ${esc(c.surface)}`;
+    b.innerHTML = `<div class="chg-top"><span class="chip" style="--c:var(${TYPE_VAR[c.type]})">${esc(c.label)}</span>${c.review ? '<span class="flag">Needs review</span>' : ""}</div>` +
+      `<div class="meta"><span>${esc(c.room)}</span><span>${where}</span><span class="mono">score ${c.score.toFixed(2)}</span></div>` +
+      (c.baseline ? `<div class="pair"><figure><img alt="Baseline view" src="${c.baseline}"><figcaption>Baseline</figcaption></figure><figure><img alt="Inspection frame ${c.frame}" src="${c.inspection}"><figcaption>This visit · frame ${c.frame}</figcaption></figure></div>` : "");
+    b.addEventListener("click", () => focusChange(k));
+    list.appendChild(b);
+  });
+
+  // ---------- 3D viewer ----------
+  const host = $("viewer-host");
+  if (!window.THREE || !THREE.OrbitControls) { host.insertAdjacentHTML("beforeend", '<div class="nowebgl">The 3D view needs three.js from a CDN, which did not load. The change list still works.</div>'); return; }
+  let renderer;
+  try { renderer = new THREE.WebGLRenderer({antialias: true}); } catch (e) { host.insertAdjacentHTML("beforeend", '<div class="nowebgl">This browser cannot draw WebGL, so the 3D view is off.</div>'); return; }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  host.prepend(renderer.domElement);
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const color = (n) => new THREE.Color(css(n) || "#888");
+  const bytes = (b64) => { const s = atob(b64); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; };
+  const f32 = (b64) => new Float32Array(bytes(b64).buffer);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 200); camera.up.set(0, 0, 1);
+  const controls = new THREE.OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = 0.12;
+  const P = f32(V.points.pos), C = bytes(V.points.col), St = bytes(V.points.status), n = V.points.n, code = V.status_codes;
+  const geo = new THREE.BufferGeometry(); geo.setAttribute("position", new THREE.BufferAttribute(P, 3));
+  const colAttr = new THREE.BufferAttribute(new Float32Array(n * 3), 3); geo.setAttribute("color", colAttr);
+  const idx = []; for (let i = 0; i < n; i++) if (P[3 * i + 2] < V.floor_z + 2.1) idx.push(i); geo.setIndex(idx);
+  const cloud = new THREE.Points(geo, new THREE.PointsMaterial({size: 0.045, vertexColors: true})); scene.add(cloud);
+  const addedGeo = new THREE.BufferGeometry(); addedGeo.setAttribute("position", new THREE.BufferAttribute(f32(V.added.pos), 3));
+  const addedMat = new THREE.PointsMaterial({size: 0.05}); const added = new THREE.Points(addedGeo, addedMat); scene.add(added);
+  const markers = new THREE.Group(); scene.add(markers); const boxMats = {};
+  const boxLines = (lo, hi, mat) => { const g = new THREE.BoxGeometry(hi[0] - lo[0] + 0.06, hi[1] - lo[1] + 0.06, hi[2] - lo[2] + 0.06);
+    const e = new THREE.LineSegments(new THREE.EdgesGeometry(g), mat); e.position.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2); return e; };
+  V.changes.forEach((c) => { const m = boxMats[c.type] || (boxMats[c.type] = new THREE.LineBasicMaterial({})); markers.add(boxLines(c.bbox_min, c.bbox_max, m));
+    if (c.type === "moved" && c.moved_to) { const a = new THREE.Vector3(...c.centroid), b2 = new THREE.Vector3(...c.moved_to); const d = b2.clone().sub(a); const len = d.length();
+      if (len > 0.05) markers.add(new THREE.ArrowHelper(d.normalize(), a, len, 0xffffff, Math.min(0.25, len * 0.3), 0.12)); } });
+  const unvGroup = new THREE.Group(); scene.add(unvGroup); const unvMat = new THREE.LineDashedMaterial({dashSize: 0.08, gapSize: 0.06});
+  V.summary.unverified.forEach((r) => { const e = boxLines(r.bbox_min, r.bbox_max, unvMat); e.computeLineDistances(); unvGroup.add(e); });
+  const pathMat = new THREE.LineBasicMaterial({}); const path = new THREE.Line(new THREE.BufferGeometry().setFromPoints(V.path.map((p) => new THREE.Vector3(p[0], p[1], p[2]))), pathMat); scene.add(path);
+  function paint() {
+    scene.background = color("--viewer-bg");
+    const miss = color("--missing"), app = color("--appearance"), unv = color("--unverified"), dark = css("color-scheme").includes("dark");
+    for (let i = 0; i < n; i++) { let r = C[3 * i] / 255, g = C[3 * i + 1] / 255, b = C[3 * i + 2] / 255; const s = St[i];
+      if (s === code.missing) ({r, g, b} = miss); else if (s === code.appearance) ({r, g, b} = app); else if (s === code.unverified) ({r, g, b} = unv);
+      else { const k = dark ? 0.62 : 0.8, bg = dark ? 0.1 : 0.9; r = r * k + (1 - k) * bg; g = g * k + (1 - k) * bg; b = b * k + (1 - k) * bg; }
+      colAttr.setXYZ(i, r, g, b); }
+    colAttr.needsUpdate = true; addedMat.color = color("--added");
+    Object.entries(boxMats).forEach(([t, m]) => { m.color = color(TYPE_VAR[t]); });
+    markers.children.forEach((o) => { if (o.type === "ArrowHelper") o.setColor(color("--moved")); });
+    unvMat.color = color("--unverified"); pathMat.color = color("--accent");
+  }
+  paint();
+  new MutationObserver(paint).observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", paint);
+  [["Baseline", cloud, "--muted"], ["Added", added, "--added"], ["Change boxes", markers, "--missing"], ["Not checked", unvGroup, "--unverified"], ["Walk path", path, "--accent"]].forEach(([name, obj, sw], k) => {
+    const l = document.createElement("label"); l.innerHTML = `<input type="checkbox" id="layer-${k}" checked><span class="swatch" style="background:var(${sw})"></span>${name}`;
+    l.querySelector("input").addEventListener("change", (e) => { obj.visible = e.target.checked; }); $("layers").appendChild(l); });
+  const box = new THREE.Box3().setFromBufferAttribute(geo.getAttribute("position"));
+  const centre = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3()), span = Math.max(size.x, size.y);
+  function home() { const k = 1 / Math.min(1, Math.max(camera.aspect, 0.45)); controls.target.copy(centre);
+    camera.position.set(centre.x - 0.15 * span * k, centre.y - 0.75 * span * k, centre.z + 0.95 * span * k); controls.update(); }
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; let anim = null;
+  focusChange = (k) => { list.querySelectorAll(".chg").forEach((el, j) => el.classList.toggle("active", j === k));
+    const c = V.changes[k]; const tgt = new THREE.Vector3(...c.centroid); if (c.type === "moved" && c.moved_to) tgt.add(new THREE.Vector3(...c.moved_to)).multiplyScalar(0.5);
+    const off = camera.position.clone().sub(controls.target).normalize().multiplyScalar(3.2); off.z = Math.max(off.z, 1.8); const to = tgt.clone().add(off);
+    if (reduce) { controls.target.copy(tgt); camera.position.copy(to); controls.update(); return; }
+    anim = {t0: performance.now(), fromT: controls.target.clone(), fromP: camera.position.clone(), toT: tgt, toP: to}; };
+  function resize() { const w = host.clientWidth, h = host.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / Math.max(h, 1); camera.updateProjectionMatrix(); }
+  new ResizeObserver(resize).observe(host); resize(); home();
+  (function loop(now) { if (anim) { const u = Math.min(1, (now - anim.t0) / 700), e = u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+      controls.target.lerpVectors(anim.fromT, anim.toT, e); camera.position.lerpVectors(anim.fromP, anim.toP, e); if (u >= 1) anim = null; }
+    controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); })(performance.now());
+})();
+</script>

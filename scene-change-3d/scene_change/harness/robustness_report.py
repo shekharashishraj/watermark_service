@@ -52,6 +52,7 @@ STRESS_TITLE = {"blur": "Motion blur", "dark": "Underexposure", "bright": "Overe
                 "depth": "Depth degradation", "compress": "Map compression"}
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
 DROP = 0.20          # relative F1 drop that counts as failure
+BOUNDED = {"F1", "IoU", "recall", "precision", "recall_px", "ap", "auroc"}
 T975 = {1: 12.71, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262}
 
 
@@ -345,13 +346,16 @@ def fig_curves(R: Records, key: str, ylabel: str, path: Path, scale: float = 1.0
         ax.set_title(STRESS_TITLE[s], color=INK, fontsize=10, loc="left")
         for m in methods:
             cv = curve(R, m, s, key)
-            if not cv:
+            if len(cv) < 2:                       # the stressor does not apply to this method
                 continue
             x = _xpos(s, [c[0] for c in cv])
             y = np.array([c[1] for c in cv]) * scale
-            lo = np.array([c[2] for c in cv]) * scale
-            hi = np.array([c[3] for c in cv]) * scale
-            ax.fill_between(x, lo, hi, color=COLOR[m], alpha=0.10, linewidth=0)
+            top = scale if key in BOUNDED else np.inf
+            lo = np.clip(np.array([c[2] for c in cv]) * scale, 0, top)
+            hi = np.clip(np.array([c[3] for c in cv]) * scale, 0, top)
+            band = np.array([c[4] >= 3 for c in cv])  # an interval over fewer than 3 scenes says little
+            if band.sum() >= 2:
+                ax.fill_between(np.asarray(x)[band], lo[band], hi[band], color=COLOR[m], alpha=0.10, linewidth=0)
             h, = ax.plot(x, y, color=COLOR[m], lw=1.8, marker=MARKER[m], ms=5.5, mec=SURFACE, mew=1.2,
                          solid_capstyle="round", solid_joinstyle="round", label=LABEL[m])
             handles[m] = h
@@ -542,8 +546,8 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str, preamble: str | None =
     L.append(f"![Frame F1 against severity]({rel_fig}/f1_vs_severity.png)\n")
     L.append(f"![False alarms against severity]({rel_fig}/false_alarms_vs_severity.png)\n")
     L.append(f"![Changes found against severity]({rel_fig}/recall_vs_severity.png)\n")
-    L.append("Bands are 95% intervals over scenes. Frame scores for lost coverage and fewer views use the frames "
-             "every level kept.\n")
+    L.append("Bands are 95% intervals over scenes, drawn where at least 3 scenes are in. Frame scores for lost "
+             "coverage and fewer views use the frames every level kept.\n")
 
     # false positives and misses
     fig_curves(R, "precision", "pixel precision", fig_dir / "precision_vs_severity.png")

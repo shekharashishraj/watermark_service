@@ -209,6 +209,9 @@ class Evidence:
     seconds: float
     app_frames_skipped: int = 0   # frames whose exposure the colour fit could not model (no appearance evidence)
     app_frames: int = 0           # frames with enough surfaces for a colour fit
+    n_viol_app: np.ndarray | None = None   # violation views whose colour could be compared (exposure gate)
+    app_obs: int = 0              # surface observations eligible for a colour check
+    app_obs_checked: int = 0      # ... and actually checked
 
 
 def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarray, cfg: DetectConfig,
@@ -235,6 +238,8 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
     fx = K[0, 0]
     add_P, add_C, add_F, fits = [], [], [], []
     n_fit_frames = n_skipped = 0
+    n_viol_app = np.zeros(N, np.int32)
+    obs_total = obs_checked = 0
     offs = [(dv, du) for dv in (-1, 0, 1) for du in (-1, 0, 1)]
     for i in range(len(session)):
         T_wc = poses[i]
@@ -292,6 +297,7 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
             exposed = _box_mean(_integral(bad[..., None]), ui, vi, r, W, H)[:, 0] == 0
         ci = np.nonzero(confirm & ~near_edge & exposed)[0]
         vi_ = np.nonzero(viol & exposed)[0]
+        obs_total += int(np.sum(confirm & ~near_edge))
         if len(ci) >= 40:
             c_obs = _box_mean(S, ui[ci], vi[ci], r[ci], W, H)
             a, b, ok = fit_color_affine(colg[idx[ci]], c_obs)
@@ -310,11 +316,13 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
                 dr = (c_obs - pred) / (pred.mean(1, keepdims=True) + 0.05)
                 np.add.at(app_dsum, gi, dr)
                 app_dabs[gi] += np.linalg.norm(dr, axis=1)
+                obs_checked += len(ci)
                 if len(vi_):
                     c_v = _box_mean(S, ui[vi_], vi[vi_], r[vi_], W, H)
                     gv = idx[vi_]
                     sv = appearance_score(c_v, np.clip(colg[gv] * a + b, 0, None), cfg, sig_l[gv], sig_c[gv])
                     n_viol_app_hi[gv] += sv > 1.0
+                    n_viol_app[gv] += 1
         # new-surface candidates
         m = (session.depth[i] > cfg.min_range) & (session.depth[i] < cfg.max_range) & ~depth_edge_mask(session.depth[i], 0.06)
         vs, us = np.mgrid[0:H:cfg.added_stride, 0:W:cfg.added_stride]
@@ -332,7 +340,7 @@ def accumulate_evidence(model: BaselineModel, session: Session, poses: np.ndarra
     cat = (lambda L, shape: np.concatenate(L) if L else np.zeros(shape))
     return Evidence(n_conf, n_viol, n_view, n_app, n_app_hi, app_sum, n_viol_app_hi, app_dsum, app_dabs,
                     cat(add_P, (0, 3)), cat(add_C, (0, 3)), cat(add_F, (0,)).astype(np.int32), fits,
-                    time.time() - t0, n_skipped, n_fit_frames)
+                    time.time() - t0, n_skipped, n_fit_frames, n_viol_app, obs_total, obs_checked)
 
 
 # ----------------------------------------------------------------------------
@@ -563,10 +571,18 @@ def detect_changes(model: BaselineModel, session: Session, reg: Registration, cf
         if len(mem) < cfg.min_missing:
             continue
         geo = float(np.mean(p_viol[mem]) * min(1.0, np.mean(ev.n_viol[mem]) / 3.0))
-        app = float(np.mean(ev.n_viol_app_hi[mem] / np.maximum(ev.n_viol[mem], 1)))
+        app_known = True
+        if cfg.app_exposure_gate:
+            # colour corroboration only from views where the colour could be compared at all
+            chk = mem[ev.n_viol_app[mem] > 0]
+            app_known = len(chk) >= max(3, len(mem) // 5)
+            app = float(np.mean(ev.n_viol_app_hi[chk] / ev.n_viol_app[chk])) if app_known else 0.0
+        else:
+            app = float(np.mean(ev.n_viol_app_hi[mem] / np.maximum(ev.n_viol[mem], 1)))
         ch = make_change("missing", mu[mem], n_views=int(np.median(ev.n_viol[mem])), geo=geo, app=app,
                          surf=majority(surface[mem]))
         ch._members = mem
+        ch._app_known = app_known
         miss_clusters.append(ch)
 
     add_clusters = []
@@ -628,6 +644,7 @@ def detect_changes(model: BaselineModel, session: Session, reg: Registration, cf
             ch = make_change("moved", m.points, n_views=min(m.n_views, ad.n_views),
                              geo=min(m.geometry_score, ad.geometry_score), app=max(m.appearance_score, 0.0),
                              surf="object")
+            ch._app_known = getattr(m, "_app_known", True)
             ch.moved_to = list(ad.centroid)
             ch.moved_distance = round(float(np.linalg.norm(np.asarray(m.centroid) - np.asarray(ad.centroid))), 2)
             ch.points_to = ad.points
@@ -648,11 +665,15 @@ def detect_changes(model: BaselineModel, session: Session, reg: Registration, cf
             reasons.append("appearance changed but geometry did not (channels disagree)")
             review = True
         else:
-            ch.score = round(0.75 * ch.geometry_score + 0.25 * max(ch.appearance_score, 0.5 if ch.type == "added" else 0.0), 3)
+            app_known = getattr(ch, "_app_known", True)
+            app_part = max(ch.appearance_score, 0.5 if ch.type == "added" else 0.0) if app_known else 0.5
+            ch.score = round(0.75 * ch.geometry_score + 0.25 * app_part, 3)
             review = False
-            if ch.type in ("missing", "moved") and ch.appearance_score < cfg.disagree_app:
+            if ch.type in ("missing", "moved") and app_known and ch.appearance_score < cfg.disagree_app:
                 reasons.append("geometry changed but colour looks unchanged (channels disagree)")
                 review = True
+            if not app_known:
+                reasons.append("colour could not be compared (exposure); geometry only")
         if ch.score < cfg.review_score:
             reasons.append(f"change score {ch.score:.2f} below {cfg.review_score:.2f}")
             review = True
@@ -713,7 +734,7 @@ def detect_changes(model: BaselineModel, session: Session, reg: Registration, cf
 
     # ---------------- verdict --------------------------------------------------
     low_cov = [r for r in rooms_out if r["coverage"] < cfg.coverage_min_room]
-    unchecked = ev.app_frames_skipped / max(ev.app_frames, 1)
+    unchecked = (1.0 - ev.app_obs_checked / max(ev.app_obs, 1)) if cfg.app_exposure_gate else 0.0
     verdict, reasons = decide_verdict(sum(1 for c in final if not c.review), sum(1 for c in final if c.review),
                                       low_cov, reg.confident, reg.inlier_ratio, cfg, unchecked)
     timings["cluster_s"] = round(time.time() - t0, 2)

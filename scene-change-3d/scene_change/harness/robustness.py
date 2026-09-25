@@ -259,9 +259,11 @@ def run_methods(ctx: SceneContext, session, keep: np.ndarray, methods, encoder=N
                   "backbone": ro.backbone, "timings": ro.timings, "seconds": secs,
                   "fps": round(len(session) / max(secs, 1e-9), 3)}
         out = [{"method": "oscd-online", **score_variant(ro.masks, ro.scores, gt, cm, ctx.changes, 0.5), **common}]
-        if ro.masks_refined is not None:
-            out.append({"method": "oscd-offline",
-                        **score_variant(ro.masks_refined, ro.scores_refined, gt, cm, ctx.changes, 0.5), **common})
+        # no frame localised -> nothing to refine: the offline output is empty too, and scored as such
+        m_off = ro.masks_refined if ro.masks_refined is not None else np.zeros_like(ro.masks)
+        s_off = ro.scores_refined if ro.scores_refined is not None else np.zeros(ro.masks.shape, np.float16)
+        out.append({"method": "oscd-offline", **score_variant(m_off, s_off, gt, cm, ctx.changes, 0.5), **common,
+                    "no_output": ro.masks_refined is None})
         return out
 
     runners = {"ours": ours, "video2d": video2d, "oscd": oscd}

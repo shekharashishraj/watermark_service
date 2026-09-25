@@ -69,6 +69,11 @@ def load_records(runs: Path) -> list[dict]:
             if "error" in r:
                 continue
             recs[(r["seed"], r["kind"], r["stressor"], r["level"], r["method"])] = r
+    # older sweeps wrote no O-SCD offline record when no frame could be localised (nothing to refine);
+    # its output is then empty, exactly like the online one
+    for (sd, kind, st, lv, m), r in list(recs.items()):
+        if m == "oscd-online" and r.get("usable") == 0 and (sd, kind, st, lv, "oscd-offline") not in recs:
+            recs[(sd, kind, st, lv, "oscd-offline")] = dict(r, method="oscd-offline", no_output=True)
     return list(recs.values())
 
 
@@ -171,7 +176,8 @@ class Records:
 
 
 HEALTH = {"video2d": "frames aligned to a baseline frame", "oscd-online": "frames localised by PnP",
-          "oscd-offline": "frames localised by PnP", "ours": "detections confirmed (not sent to review)"}
+          "oscd-offline": "frames localised by PnP",
+          "ours": "depth points agreeing with the baseline (recorded from the depth and compression sweeps on)"}
 
 
 def health(r: dict):
@@ -181,9 +187,8 @@ def health(r: dict):
         return r["matched_frames"] / max(r["n_frames"], 1)
     if m.startswith("oscd") and r.get("localized") is not None:
         return r["localized"] / max(r["n_frames"], 1)
-    if m == "ours" and r.get("detections") is not None:
-        d = r["detections"]
-        return float(np.mean([not x["review"] for x in d])) if d else 1.0
+    if m == "ours" and r.get("self_registration"):
+        return r["self_registration"].get("inlier_ratio")
     return None
 
 
@@ -571,10 +576,11 @@ def build_report(R: Records, fig_dir: Path, rel_fig: str, preamble: str | None =
     # self-diagnostics
     L.append("## Does each method know when it is failing?\n")
     L.append("Each method has an internal signal of how the run went: the 2D method knows how many frames it "
-             "could align to a baseline frame, O-SCD how many it could localise with PnP, and our detector sends "
-             "uncertain detections to review instead of confirming them. Rank correlation over all runs between "
-             "that signal and frame F1 (1: the signal tracks accuracy; 0: it says nothing), and the signal at "
-             "the reference and at each stressor's most severe level.\n")
+             "could align to a baseline frame, O-SCD how many it could localise with PnP, and our detector how "
+             "much of its depth agrees with the baseline surfaces. Rank correlation over all runs between that "
+             "signal and frame F1 (1: the signal tracks accuracy; 0: it says nothing), and the signal at the "
+             "reference and at each stressor's most severe level. Our detector sends uncertain detections to "
+             "review instead of confirming them; the second table shows how well that separates right from wrong.\n")
     L.append("| Method | Signal | Correlation with F1 | Reference | " +
              " | ".join(STRESS_TITLE[s] for s in R.stressors) + " |")
     L.append("|---|---|---|---|" + "---|" * len(R.stressors))

@@ -1,0 +1,150 @@
+# Pre-registered analysis (experiment_plan.md §1, §9, §10). Freeze this file together with
+# docs/PREREGISTRATION.md BEFORE running E4; anything changed afterwards is exploratory and the
+# report must say so. Run:  python scripts/analyze.py --config configs/analysis.yaml
+name: main
+paths: paths.yaml                    # output: ${results}/analysis/<name>/
+
+experiments:                         # key -> experiment config; missing or partial results are fine
+  e1: experiments/e1_clean.yaml
+  e2: experiments/e2_identity.yaml
+  e4: experiments/e4_main.yaml
+  e5: experiments/e5_null.yaml
+  e7: experiments/e7_matched.yaml
+
+# What is compared. A system = one (method, arm, output) of a run. Colours follow the system, never
+# its rank (validated categorical order, light surface); markers are the second channel.
+systems:
+  oscd_online:  {method: oscd,   arm: default, output: online,  label: "O-SCD online",            color: "#2a78d6", marker: o}
+  oscd_refined: {method: oscd,   arm: default, output: refined, label: "O-SCD refined",           color: "#eb6834", marker: s}
+  mv3dcd:       {method: mv3dcd, arm: default, output: final,   label: "MV3DCD (oracle poses)",   color: "#1baf7a", marker: "^"}
+  oscd_matched: {method: oscd,   arm: matched, output: online,  label: "O-SCD iteration-matched", color: "#eda100", marker: D}
+
+# Severity -> magnitude (0 = baseline, larger = worse). split_sign makes two curves
+# (<name>_under for negative severities, <name>_over for positive ones).
+baseline: [identity, clean]          # severity-0 runs: the first of these present in the experiment
+stressors:
+  blur:         {magnitude: value,     label: "Motion-blur length (native px)"}
+  exposure:     {magnitude: abs, split_sign: true, label: "|EV|"}
+  views:        {magnitude: one_minus, label: "Fraction of post-change views dropped"}
+  views_gap:    {magnitude: value,     label: "Fraction dropped as one sector"}
+  white_balance: {magnitude: abs,      label: "White-balance shift k"}
+  gain_field:   {magnitude: value,     label: "Gain-field amplitude"}
+  shadow:       {magnitude: value,     label: "Shadow darkening"}
+  noise:        {magnitude: value,     label: "Noise level"}
+  burst_start:  {magnitude: value,     label: "Burst blur length (px), start"}
+  burst_middle: {magnitude: value,     label: "Burst blur length (px), middle"}
+  burst_end:    {magnitude: value,     label: "Burst blur length (px), end"}
+
+stats:
+  n_boot: 10000                      # scene bootstrap resamples (percentile CI)
+  ci: 0.95
+  alpha: 0.05                        # Holm-Bonferroni over the primary family below
+  family_size: 15                    # H1 6 + H2 2 + H3 4 + H4 2 + H5 1; tests that could not run count as p = 1
+  seed: 598
+  noise_k: 2                         # a change counts only if |mean| > noise_k x clean noise SD and its CI excludes 0
+  min_scenes: 3                      # fewer scenes -> reported, not tested
+
+# Run-summary metrics carried into the degradation curves (scene value = mean over instances after
+# averaging trials and seeds). Histogram metrics are pooled per scene (see calibration).
+curves:
+  experiments: [e4, e5, e7]
+  metrics: [miou, mf1, pooled_iou, miou_btol, paper_miou, fp_frac_mean, fn_frac_mean,
+            missing_rate, pose_fail_rate, far_mean, ffr]
+
+calibration:
+  missing_as_zero: true              # frames without a prediction enter the histograms as p = 0
+  hist_metrics: [auroc, auprc, cw_fp, cw_fn, brier, ece15, best_f1, f1_at_decision, thr_gap]
+  folds:                             # scene split for recalibration / threshold transfer (both hold MV3DCD scenes)
+    A: [Cantina, Lounge, Garden, Pots, Porch]
+    B: [Printing_area, Lunch_room, Meeting_room, Zen, Playground]
+  reliability_bins: 15
+
+# ---- gates and checks (not part of the Holm family)
+reproduction:                        # gate G1 on E1; paper-mode numbers (released evaluator semantics)
+  experiment: e1
+  tolerance: 0.03
+  targets:
+    oscd_online:  {paper_miou: 0.486, paper_f1: 0.638}
+    oscd_refined: {paper_miou: 0.552, paper_f1: 0.694}
+    mv3dcd:       {paper_miou: 0.461, paper_f1: 0.612}
+  noise_metrics: [miou, mf1, pooled_iou, far_mean, auprc, cw_fp]
+
+identity_check:                      # E2: identity re-encode vs clean, per scene
+  experiment: e2
+  clean_experiment: e1
+  systems: [oscd_online, oscd_refined]
+  metrics: [miou, mf1]
+
+# ---- pre-registered hypotheses (primary family)
+h1:                                  # accuracy falls with severity; failure boundary s*
+  experiment: e4
+  systems: [oscd_online, mv3dcd]
+  also_report: [oscd_refined]
+  stressors: [blur, exposure, views]
+  metric: miou
+  expected: negative
+  boundary_drop: 0.10                # s* = first level whose CI lower bound of mean relative drop > 10%
+
+h2:                                  # false alarms on no-change pairs rise with severity
+  experiment: e5
+  systems: [oscd_online]
+  also_report: [oscd_refined]
+  stressors: [blur, exposure]
+  metric: far_mean
+  secondary: [ffr]
+  expected: positive
+
+h3:                                  # scores become less informative and more confidently wrong
+  experiment: e4
+  systems: [oscd_online, mv3dcd]
+  also_report: [oscd_refined]
+  stressors: [blur, exposure, views]
+  metrics: {cw_fp: positive, auprc: negative}
+  combine: mean                      # per scene: mean of the per-stressor rhos, then one Wilcoxon
+
+h4:                                  # online degrades faster than refined (AUDC)
+  experiment: e4
+  online: oscd_online
+  refined: oscd_refined
+  stressors: [views, blur]
+  metric: miou
+  expected: positive                 # AUDC(refined) - AUDC(online) > 0
+  attribution:                       # exploratory: iteration-matched arm (E7) on the common grid
+    experiments: [e4, e7]
+    matched: oscd_matched
+    hindsight_below: 0.33            # share = (matched - online) / (refined - online)
+    budget_above: 0.67
+
+h5:                                  # cheap per-frame signals predict frame failure
+  experiment: e4
+  system: oscd_online
+  fail_iou: 0.3                      # frame failure: IoU < 0.3 (missing prediction = empty mask)
+  signals:                           # risk: which end is risky; transform before use; fill for missing
+    log_n_ba_inliers:  {risk: low,  transform: log1p, fill: 0}
+    log_n_pnp_inliers: {risk: low,  transform: log1p, fill: 0}
+    log_n_corr:        {risk: low,  transform: log1p, fill: 0}
+    log_pose_ok:       {risk: low,  fill: 0}
+    log_ssf_loss_frame: {risk: high}
+    log_cue_mean:      {risk: high}
+    lap_var:           {risk: low,  transform: log1p}
+    brightness:        {risk: high, transform: absdev, center: 0.5}
+    clipped_frac:      {risk: high}
+    pred_area_frac:    {risk: high, null: false}      # null: false = excluded on no-change frames (it IS the label there)
+    score_entropy:     {risk: high}
+  trust_rule:
+    signals: [log_n_ba_inliers, lap_var]   # reject a frame if either signal is in its risky tail
+    min_coverage: 0.7                # thresholds chosen on 9 scenes to minimise error on kept frames
+    grid: 41
+  null:                              # secondary: no-change frames (E5), failure = FAR > 1%
+    experiment: e5
+    fail_far: 0.01
+
+components:                          # change-object recall by size (§9.3)
+  experiments: [e4]
+  size_bins: [0.0, 0.005, 0.02, 0.05, 1.0]
+  detected_frac: 0.5
+
+figures:
+  reliability_stressor: blur         # F4: clean vs mid vs most severe level
+  format: [png, pdf]
+  dpi: 200

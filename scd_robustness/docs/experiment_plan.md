@@ -581,6 +581,8 @@ Degrade the map instead of the revisit. This needs new reconstructions, so it is
 
 **Total ≈ 810 × 4 min + 280 × 7 min ≈ 54 + 33 ≈ 90 GPU-hours** for the MVP, well within a semester's cluster allocation if split into SLURM arrays.
 
+**GPU assumption.** These are **RTX 4090-class (24 GB) hours**, extrapolated from the only published timings (both papers used a single RTX 4090); none was measured. An A100 should be in the same range for this workload; a V100 or a small MIG slice would be slower, and may run out of memory. Much of an O-SCD run is startup (model loading, `torch.compile`, CPU keypoint matching), which does not speed up on a faster GPU. The two speed-ups above could cut O-SCD to roughly 15–25 GPU-hours. **Recompute the budget from E0 timings on the GPU you actually get.**
+
 **Storage.** With histograms plus binary masks, a few GB. With full float16 maps, about 1.1 MB per frame, so keep them for the pilot plus 2 scenes only.
 
 **SLURM array template:**

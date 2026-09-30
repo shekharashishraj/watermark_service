@@ -1,0 +1,17 @@
+# E5 — no-change false alarms (H2). Map = one pre-change capture, revisit = the OTHER pre-change
+# capture of the same scene (different lighting, no physical change): every detection is a false alarm.
+# Both directions per scene. Metrics: far_mean (flagged-pixel rate) and ffr (frames flagging > 0.5%).
+name: e5_null
+paths: ../paths.yaml
+perturbations: ../perturbations.yaml
+
+methods:
+  oscd:
+    scenes: all
+    pairs: ["null:Instance_1:Instance_2", "null:Instance_2:Instance_1"]
+    seeds: [0]
+
+sweep:
+  identity: [0]
+  blur: [16, 32, 64, 128]
+  exposure: [-3, -2, -1, 1, 2]

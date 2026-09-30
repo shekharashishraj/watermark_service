@@ -1,0 +1,19 @@
+# Every path the pipeline uses. ${name} expands to another key of this file or to an environment
+# variable; `source setup/sol.env` exports SCD_ROOT (default /scratch/$USER/scd).
+root: ${SCD_ROOT}
+
+# patched method code (setup/01_fetch_code.sh clones the pinned commits here and applies patches/)
+code_oscd: ${root}/code/O-SCD
+code_mv3dcd: ${root}/code/MV3DCD
+
+# Unzipped datasets (setup/03_fetch_data.sh). Both zips contain a top-level PASLCD/ folder.
+#   data_online  must contain Instance_1/<Scene>/ and Instance_2/<Scene>/        (PASLCD_online.zip, O-SCD)
+#   data_offline must contain <Scene>/Instance_1/ and <Scene>/Instance_2/        (PASLCD.zip, MV3DCD)
+# Run scripts/check_dataset.py after downloading; fix these two lines if the layout differs.
+data_online: ${root}/data/raw/online/PASLCD
+data_offline: ${root}/data/raw/offline/PASLCD
+
+variants: ${root}/data/variants     # generated perturbed datasets (symlinks + changed images)
+runs: ${root}/runs                  # one folder per run: method outputs, logs, eval/
+manifests: ${root}/manifests        # variants.jsonl / runs_*.jsonl per experiment
+results: ${root}/results            # collected CSVs, figures

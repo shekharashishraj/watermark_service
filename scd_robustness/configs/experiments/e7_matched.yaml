@@ -1,0 +1,23 @@
+# E7 — online vs offline attribution (H4). The iteration-matched arm runs online with
+# steps_per_frame = round(refine_total / n_frames) (~120 for 25 frames), i.e. about the same total
+# optimisation as --refine but WITHOUT future frames. Compare with the online and refined masks of
+# the same variants in e4_main.
+name: e7_matched
+paths: ../paths.yaml
+perturbations: ../perturbations.yaml
+
+methods:
+  oscd:
+    scenes: all
+    pairs: [Instance_1]
+    seeds: [0]
+    arms:
+      matched: {refine: false, steps_per_frame: auto, refine_total: 3000}
+
+sweep:
+  identity: [0]
+  views: [0.6, 0.4, 0.2]
+  blur: [32, 128]
+
+trials:
+  views: 3

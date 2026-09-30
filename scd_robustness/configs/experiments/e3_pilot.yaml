@@ -1,0 +1,31 @@
+# E3 — pilot on 2 scenes x 2 instances with EXTENDED grids. Use it to choose the frozen E4 grid
+# (4 non-zero levels per stressor spanning "no effect" to ">=30% drop or >=50% pose failure"),
+# then write the grid into PREREGISTRATION.md and e4_main.yaml before running E4.
+name: e3_pilot
+paths: ../paths.yaml
+perturbations: ../perturbations.yaml
+
+methods:
+  oscd:
+    scenes: [Cantina, Porch]
+    pairs: [Instance_1, Instance_2]
+    seeds: [0]
+  mv3dcd:
+    scenes: [Cantina, Porch]
+    pairs: [Instance_1, Instance_2]
+    seeds: [0]
+  oscd_null:
+    method: oscd
+    scenes: [Cantina, Porch]
+    pairs: ["null:Instance_1:Instance_2", "null:Instance_2:Instance_1"]
+    seeds: [0]
+    sweep:
+      identity: [0]
+      blur: [16, 32, 64, 128, 256]
+      exposure: [-4, -3, -2, -1, 1, 2, 3]
+
+sweep:
+  identity: [0]
+  blur: [16, 32, 64, 128, 256]
+  exposure: [-4, -3, -2, -1, 1, 2, 3]
+  views: [0.6, 0.4, 0.2, 0.12]

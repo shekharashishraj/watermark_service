@@ -1,0 +1,20 @@
+# MV3DCD environment (Python 3.8, PyTorch 2.4.0 cu124, gsplat 1.4.0 — the versions its README tested).
+# CUDA 12.4 compiler/headers and GCC come from conda-forge; torch, gsplat and the rest are
+# pip-installed by setup/02_create_envs.sh.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip
+  - setuptools       # needed by --no-build-isolation builds of the CUDA extensions
+  - wheel
+  - cuda-version=12.4
+  - cuda-nvcc
+  - cuda-cudart-dev
+  - cuda-cccl
+  - cuda-nvrtc-dev
+  - libcurand-dev
+  - gcc_linux-64=12
+  - gxx_linux-64=12
+  - ninja
+  - git

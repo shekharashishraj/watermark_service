@@ -1,0 +1,65 @@
+diff --git a/mask_models.py b/mask_models.py
+index 4755a28..99901bb 100644
+--- a/mask_models.py
++++ b/mask_models.py
+@@ -1,4 +1,5 @@
+ import argparse
++import os
+ import torch
+ import torch.nn.functional as F
+ import torchvision.transforms
+@@ -77,7 +78,12 @@ class ViTExtractor:
+             model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg', pretrained=True)
+             print('Loaded dinov2_vitl14_reg')
+         elif 'v2' in model_type:
+-            model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14', pretrained=True)
++            # [scd] allow loading DINOv2 from a local clone (compute nodes may be offline)
++            _local_repo = os.environ.get("SCD_DINOV2_REPO")
++            if _local_repo:
++                model = torch.hub.load(_local_repo, 'dinov2_vitl14', source='local', pretrained=True)
++            else:
++                model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14', pretrained=True)
+             # model = torch.hub.load('dinov2', 'dinov2_vitl14', source='local', pretrained=False)
+             # model.load_state_dict(torch.load('/home/chamuditha/Desktop/Phase_1/Ours/dinov2_vitl14_pretrain.pth'))
+             # print('Loaded dinov2_vitl14')
+diff --git a/render_viewpoints.py b/render_viewpoints.py
+index 87719bd..6e37ac8 100644
+--- a/render_viewpoints.py
++++ b/render_viewpoints.py
+@@ -111,6 +111,11 @@ if __name__ == "__main__":
+ 
+             final_image_mask = final_image_mask.permute(1, 2, 0).cpu().numpy() * np.expand_dims(alpha_mask, axis=-1)
+             final_image_mask = np.clip(final_image_mask, 0, 1)
++            # [scd] keep the continuous change score (before the >127 threshold) for calibration analysis
++            if os.environ.get("SCD_SAVE_SCORES", "0") == "1":
++                os.makedirs(os.path.join(scene.model_path, folder_n, "change_score"), exist_ok=True)
++                np.save(os.path.join(scene.model_path, folder_n, "change_score", "{}.npy".format(test_viewpoint.image_name)),
++                        final_image_mask.mean(axis=-1).astype(np.float16))
+             final_image_mask = (final_image_mask * 255).astype(np.uint8)
+ 
+             binary_mask = (final_image_mask > 127).astype(np.float32)
+diff --git a/utils/general_utils.py b/utils/general_utils.py
+index 541c082..67ce083 100644
+--- a/utils/general_utils.py
++++ b/utils/general_utils.py
+@@ -11,6 +11,7 @@
+ 
+ import torch
+ import sys
++import os
+ from datetime import datetime
+ import numpy as np
+ import random
+@@ -127,7 +128,9 @@ def safe_state(silent):
+ 
+     sys.stdout = F(silent)
+ 
+-    random.seed(0)
+-    np.random.seed(0)
+-    torch.manual_seed(0)
++    # [scd] seed configurable through SCD_SEED (default 0 = released behaviour)
++    _seed = int(os.environ.get("SCD_SEED", "0"))
++    random.seed(_seed)
++    np.random.seed(_seed)
++    torch.manual_seed(_seed)
+     torch.cuda.set_device(torch.device("cuda:0"))

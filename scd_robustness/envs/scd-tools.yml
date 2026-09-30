@@ -1,0 +1,17 @@
+# CPU environment: planning, perturbation/variant generation, result collection and analysis.
+# Created by setup/02_create_envs.sh as a prefix env under $SCD_ENVS/scd-tools.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - pandas
+  - pyarrow
+  - matplotlib
+  - scikit-learn
+  - pyyaml
+  - opencv            # conda-forge build; headless use only
+  - pytest
+  - git
+  # - colmap          # uncomment for pose protocol B (re-registration); large download

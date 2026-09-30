@@ -1,0 +1,20 @@
+# O-SCD environment (Python 3.12, PyTorch cu128 wheels). The CUDA 12.8 compiler/headers and a GCC
+# toolchain come from conda-forge so the rasterizer extensions build without any cluster module.
+# PyTorch, xformers, cupy and O-SCD's requirements are pip-installed by setup/02_create_envs.sh.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - setuptools       # needed by --no-build-isolation builds of the CUDA extensions
+  - wheel
+  - cuda-version=12.8
+  - cuda-nvcc
+  - cuda-cudart-dev
+  - cuda-cccl          # cub / thrust / libcu++ headers (rasterizer, simple-knn, RANSAC kernel)
+  - cuda-nvrtc-dev     # runtime compilation of poses/ransac.cu through CuPy
+  - libcurand-dev
+  - gcc_linux-64=12
+  - gxx_linux-64=12
+  - ninja
+  - git

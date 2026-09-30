@@ -1,0 +1,275 @@
+diff --git a/arguments/config_args.py b/arguments/config_args.py
+index 698ed8e..5b19ef8 100644
+--- a/arguments/config_args.py
++++ b/arguments/config_args.py
+@@ -58,6 +58,18 @@ def parse_args():
+                         help="Number of keypoints considered for initial mini bundle adjustment")
+     parser.add_argument('--iters_miniba_incr', type=int, default=20)
+   
++    # --- scd_robustness additions (defaults reproduce the released behaviour) ---
++    parser.add_argument('--seed', type=int, default=0,
++                        help="[scd] RNG seed (released code hardcodes 0)")
++    parser.add_argument('--steps_per_frame', type=int, default=16,
++                        help="[scd] SSF optimisation steps per incoming frame (released: 16)")
++    parser.add_argument('--refine_total', type=int, default=3000,
++                        help="[scd] total iteration budget of the --refine loop (released: 3000)")
++    parser.add_argument('--save_scores', action='store_true',
++                        help="[scd] save continuous change scores (raw render, float16 .npy) before thresholding")
++    parser.add_argument('--frame_log', action='store_true',
++                        help="[scd] write per-frame pose/timing/loss log to <model_path>/frame_log.jsonl")
++
+     args = parser.parse_args(sys.argv[1:])
+     args.save_iterations.append(args.iterations)
+     
+diff --git a/oscd.py b/oscd.py
+index 6613d8b..8d604b9 100644
+--- a/oscd.py
++++ b/oscd.py
+@@ -23,6 +23,7 @@ from scene.dense_extractor import DenseExtractor
+ from scene.keyframe import Keyframe
+ from scene.cameras import Camera
+ import json
++import time
+ from utils.camera_utils import camera_to_JSON
+ import warnings 
+ warnings.filterwarnings("ignore")
+@@ -67,11 +68,11 @@ def generate_candidate_map(original_image, image_rgb, model, patch_size, height,
+     return delta
+ 
+ def main(dataset: Namespace, opt : Namespace, pipe: Namespace, args: Namespace):
+-    torch.manual_seed(0)
+-    torch.cuda.manual_seed(0)
+-    torch.cuda.manual_seed_all(0)
+-    np.random.seed(0)
+-    random.seed(0)
++    torch.manual_seed(args.seed)
++    torch.cuda.manual_seed(args.seed)
++    torch.cuda.manual_seed_all(args.seed)
++    np.random.seed(args.seed)
++    random.seed(args.seed)
+ 
+     gaussians_rgb = GaussianModel(dataset.sh_degree, dataset.sh_degree)
+     gaussians_rgb.load_ply(os.path.join(args.source_path, "reference_reconstruction", "point_cloud", "iteration_30000", "point_cloud.ply"))
+@@ -170,18 +171,56 @@ def main(dataset: Namespace, opt : Namespace, pipe: Namespace, args: Namespace):
+             candidate_map = generate_candidate_map(dummy_image, dummy_image, model, patch_size, height, width)
+ 
+ 
++    # [scd] logging / score-saving setup
++    frame_log_f = open(os.path.join(args.model_path, "frame_log.jsonl"), "w") if args.frame_log else None
++    if args.save_scores:
++        os.makedirs(os.path.join(renders_path, "change_score"), exist_ok=True)
++        if args.refine:
++            os.makedirs(os.path.join(renders_path, "change_score_refined"), exist_ok=True)
++
++    def _sync():
++        # only synchronise when timing is logged, so default FPS is unaffected
++        if frame_log_f is not None:
++            torch.cuda.synchronize()
++
++    n_pose_fail = 0
++    extent = None
++    t_loop_start = time.perf_counter()
++
+     pbar_inf = tqdm(range(0, len(dataset)), desc="Running OSCD")
+     
+     for frameID in pbar_inf:
+ 
+         image, info = dataset.getnext()
+-        desc_kpts = detector(image)
+-        prev_keyframes = get_reference_keyframes(
+-            n=args.num_reference_keyframes, keyframes=reference_keyframes, matcher=matcher, desc_kpts=desc_kpts
+-        )
+-        Rt, _ = pose_initializer.init_inference_pose(
+-            prev_keyframes, desc_kpts, frameID, False, image
+-        )
++        frame_rec = {"frame": frameID, "image_name": info["name"].split(".")[0]}
++        _sync()
++        t0 = time.perf_counter()
++        # [scd] released code crashes when a frame cannot be localised (init_inference_pose
++        # returns None); degraded frames make this common, so record the failure and skip.
++        pose_out, fail_reason = None, None
++        try:
++            desc_kpts = detector(image)
++            prev_keyframes = get_reference_keyframes(
++                n=args.num_reference_keyframes, keyframes=reference_keyframes, matcher=matcher, desc_kpts=desc_kpts
++            )
++            pose_out = pose_initializer.init_inference_pose(
++                prev_keyframes, desc_kpts, frameID, False, image
++            )
++            if pose_out is None:
++                fail_reason = "too_few_inliers"
++        except Exception as e:
++            fail_reason = "exception: " + repr(e)[:200]
++        _sync()
++        frame_rec["t_pose_ms"] = (time.perf_counter() - t0) * 1000.0
++        frame_rec.update(getattr(pose_initializer, "last_stats", {}))
++        frame_rec["pose_ok"] = pose_out is not None
++        if pose_out is None:
++            n_pose_fail += 1
++            frame_rec["fail_reason"] = fail_reason
++            if frame_log_f is not None:
++                frame_log_f.write(json.dumps(frame_rec) + "\n")
++            continue
++        Rt, _ = pose_out
+ 
+         R = Rt[:3, :3].cpu().numpy()
+         t = Rt[:3, 3].cpu().numpy()
+@@ -204,7 +243,7 @@ def main(dataset: Namespace, opt : Namespace, pipe: Namespace, args: Namespace):
+             viewpoints.append(view)
+ 
+         # if accuracy is your priority, it is recommended to have ~32 iterations 
+-        for iteration in range(16):
++        for iteration in range(args.steps_per_frame):
+             total_iterations += 1
+             if np.random.rand() > 0.33:
+                 keyframe_idx = randint(0, len(viewpoints)-1)
+@@ -259,13 +298,34 @@ def main(dataset: Namespace, opt : Namespace, pipe: Namespace, args: Namespace):
+             render_pkg_change = render_change(view, gaussians_change, pipe, background)
+             change_mask, viewspace_point_tensor, visibility_filter, radii = render_pkg_change["render"], render_pkg_change["viewspace_points"], render_pkg_change["visibility_filter"], render_pkg_change["radii"]
+             change_mask = change_mask.mean(dim=0)
++            if args.save_scores:
++                np.save(os.path.join(renders_path, "change_score", f"{view.image_name}.npy"),
++                        change_mask.cpu().numpy().astype(np.float16))
++            if frame_log_f is not None:
++                sig = torch.sigmoid(change_mask)
++                cue = view.candidate_map[0]
++                frame_rec["ssf_loss_frame"] = float((cue * (1.0 - sig)).mean() + torch.log(sig.mean() ** 2 + 1.0))
++                frame_rec["cue_mean"] = float(cue.mean())
+             change_mask = (change_mask > 0.5).float()
+             change_masks[view.image_name] = change_mask
++        if frame_log_f is not None:
++            frame_rec["pred_area_frac"] = float(change_mask.mean())
++            _sync()
++            frame_rec["t_frame_ms"] = (time.perf_counter() - t0) * 1000.0
++            frame_log_f.write(json.dumps(frame_rec) + "\n")
+ 
+     pbar_inf.close()
+-    
+-    if args.refine:
+-        pbar_finetuning = tqdm(range(total_iterations, 3000), desc="Refining Change Mask")
++    t_loop_end = time.perf_counter()
++    if frame_log_f is not None:
++        frame_log_f.close()
++
++    # [scd] extent is normally set at step 4 of the per-frame loop; compute it if that never ran
++    if extent is None:
++        scene_center = torch.stack(cam_centers, dim=0).mean(dim=0)
++        extent = torch.max(torch.linalg.norm(torch.stack([v for v in cam_centers], dim=0) - scene_center.unsqueeze(0), dim=-1)).item() * 1.1
++
++    if args.refine and len(viewpoints) > 0:
++        pbar_finetuning = tqdm(range(total_iterations, args.refine_total), desc="Refining Change Mask")
+     
+         for iteration in pbar_finetuning:
+             total_iterations += 1
+@@ -309,16 +369,37 @@ def main(dataset: Namespace, opt : Namespace, pipe: Namespace, args: Namespace):
+     for key in change_masks:
+         cv2.imwrite(os.path.join(renders_path, "change_mask", f"{key}.png"), (change_masks[key].cpu().numpy() * 255).astype(np.uint8))
+ 
+-    if args.refine:
++    if args.refine and len(viewpoints) > 0:
+         with torch.no_grad():
+             for view in viewpoints:
+                 render_pkg = render_change(view, gaussians_change, pipe, background)
+                 change_mask, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+                 change_mask = change_mask.mean(dim=0)
++                if args.save_scores:
++                    np.save(os.path.join(renders_path, "change_score_refined", f"{view.image_name}.npy"),
++                            change_mask.cpu().numpy().astype(np.float16))
+                 change_mask = (change_mask > 0.5).float()
+                 cv2.imwrite(os.path.join(renders_path, "change_mask_refined", f"{view.image_name}.png"), (change_mask.cpu().numpy() * 255).astype(np.uint8))
+ 
+     # Save inference cameras to JSON for viewer
++    # [scd] run summary
++    n_frames = len(dataset)
++    online_s = t_loop_end - t_loop_start
++    with open(os.path.join(args.model_path, "run_summary.json"), "w") as f_sum:
++        json.dump({
++            "n_frames": n_frames,
++            "n_pose_fail": n_pose_fail,
++            "n_registered": len(viewpoints),
++            "online_loop_s": online_s,
++            "online_fps": n_frames / online_s if online_s > 0 else None,
++            "fps_includes_sync": frame_log_f is not None,
++            "total_iterations": total_iterations,
++            "seed": args.seed,
++            "steps_per_frame": args.steps_per_frame,
++            "refine": bool(args.refine),
++            "refine_total": args.refine_total,
++        }, f_sum, indent=2)
++
+     cameras_json = []
+     for idx, view in enumerate(viewpoints):
+         cameras_json.append(camera_to_JSON(idx, view))
+diff --git a/poses/feature_detector.py b/poses/feature_detector.py
+index 7a4daa8..d878e4b 100644
+--- a/poses/feature_detector.py
++++ b/poses/feature_detector.py
+@@ -96,7 +96,12 @@ class Detector():
+             extractor = torch.jit.load(cache_path)
+         else:
+             print(f"Compiling feature extractor")
+-            extractor = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained=True, top_k=top_k)
++            # [scd] allow a local clone of the XFeat hub repo (compute nodes may be offline)
++            _xfeat_repo = os.environ.get("SCD_XFEAT_REPO")
++            if _xfeat_repo:
++                extractor = torch.hub.load(_xfeat_repo, 'XFeat', source='local', pretrained=True, top_k=top_k)
++            else:
++                extractor = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained=True, top_k=top_k)
+             extractor = extractor.cuda().eval().to(torch.half)
+ 
+             ## Overriding the functions to run at fixed size
+diff --git a/poses/pose_initializer.py b/poses/pose_initializer.py
+index 25052be..ff4dd3d 100644
+--- a/poses/pose_initializer.py
++++ b/poses/pose_initializer.py
+@@ -57,6 +57,9 @@ class PoseInitializer():
+         Initialize the pose of the frame given by curr_desc_kpts and index using the previously registered keyframes.
+         """
+         
++        # [scd] per-frame pose statistics, read by oscd.py for the frame log
++        self.last_stats = {"n_corr": 0, "n_pnp_inliers": 0, "n_ba_inliers": 0}
++
+         # Match the current frame with previous keyframes
+         xyz = []
+         uvs = []
+@@ -87,12 +90,14 @@ class PoseInitializer():
+         # Estimate an initial camera pose and inliers using PnP RANSAC
+         Rs6D_init = keyframes[0].rW2C
+         ts_init = keyframes[0].tW2C
++        self.last_stats["n_corr"] = int(len(xyz))
+         Rt, inliers = self.PnPRANSAC(uvs, xyz, self.f, self.centre, Rs6D_init, ts_init, confs)
+ 
+         xyz = xyz[inliers]
+         uvs = uvs[inliers]
+         confs = confs[inliers]
+         match_indices = match_indices[inliers]
++        self.last_stats["n_pnp_inliers"] = int(len(xyz))
+ 
+         # print(f"PoseInitializer: {len(xyz)} points after PnP RANSAC")
+ 
+@@ -113,6 +118,7 @@ class PoseInitializer():
+         Rt[:3, 3] = ts[0]
+ 
+         # print(f"PoseInitializer: {f} focal, {r_init} initial residual, {r} final residual")
++        self.last_stats["n_ba_inliers"] = int(mask.sum())
+         # Check if we have sufficiently many inliers
+         if is_test or mask.sum() > self.min_num_inliers:
+             # Return the pose of the current frame
+diff --git a/scene/dense_extractor.py b/scene/dense_extractor.py
+index 0cb65be..6e2e26c 100644
+--- a/scene/dense_extractor.py
++++ b/scene/dense_extractor.py
+@@ -26,7 +26,12 @@ class DenseExtractor():
+         if os.path.exists(cache_path):
+             self.extractor = torch.jit.load(cache_path)
+         else:
+-            self.extractor = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained = True, top_k = 4096)
++            # [scd] allow a local clone of the XFeat hub repo (compute nodes may be offline)
++            _xfeat_repo = os.environ.get("SCD_XFEAT_REPO")
++            if _xfeat_repo:
++                self.extractor = torch.hub.load(_xfeat_repo, 'XFeat', source='local', pretrained = True, top_k = 4096)
++            else:
++                self.extractor = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained = True, top_k = 4096)
+             self.extractor = self.extractor.half().cuda().eval()
+ 
+             state_dict = copy.deepcopy(self.extractor.state_dict())

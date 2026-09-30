@@ -173,21 +173,28 @@ Record for each: wall-clock time per stage, peak GPU memory, and output folder s
 
 ## 5. Repository layout, conventions, logging
 
-### 5.1 Layout (in this repo)
+### 5.1 Layout (implemented; see [`../README.md`](../README.md))
 ```
 scd_robustness/
-  docs/            papers_explained.md, experiment_plan.md, PREREGISTRATION.md, dataset_facts.md
-  patches/         oscd.patch, mv3dcd.patch       (applied to the pinned commits)
-  configs/         sweep_mvp.yaml, sweep_stretch.yaml, scenes.yaml
-  perturb/         io.py, blur.py, exposure.py, illumination.py, coverage.py, make_variant.py, null_pairs.py
-  run/             run_oscd.py, run_mv3dcd.py, colmap_reregister.py, manifest.py, slurm_array.sh
-  eval/            evaluate.py (counts + histograms), calibration.py, components.py, signals.py
-  analysis/        aggregate.py, stats.py, figures.py, report_tables.py
-  tests/           test_perturb.py (identity + determinism), test_eval.py (toy masks)
+  docs/      papers_explained.md, experiment_plan.md (+ PREREGISTRATION.md, dataset_facts.md to add)
+  configs/   paths.yaml, perturbations.yaml (stressor catalog), experiments/e0…e7 *.yaml
+  envs/      scd-tools.yml, oscd.yml, mv3dcd.yml     (isolated prefix envs with their own CUDA toolkit)
+  patches/   oscd.patch, mv3dcd.patch                (applied to the pinned commits)
+  setup/     sol.env, 01_fetch_code … 04_prestage_models, 05_smoke_test.sbatch
+  scd/       perturb, variants, plan, runner, evaluate, metrics, imageio, config, colmap_rw
+  scripts/   scd_plan, make_variants, run_oscd, run_mv3dcd, evaluate_run, collect_results, check_dataset
+  slurm/     variants / oscd / mv3dcd array jobs + submit_experiment.sh
+  tests/     synthetic-dataset tests (pytest)
 ```
+Still to write: pose protocol B (COLMAP re-registration), `render_heldout.py` (P8), E9 compression, analysis/statistics scripts.
 
-### 5.2 Variant naming
-Each variant is identified as `{method}/{scene}/{instance}/{stressor}-{severity}/t{trial}-s{seed}`. Examples: `oscd/Cantina/Instance_1/blur-32/t0-s0` and `mv3dcd/Porch/Instance_2/views-10/t2-s0`.
+### 5.2 Variant and run naming
+- **Variant id:** `{stressor}-{severity}_t{trial}`, e.g. `blur-32_t0`, `exposure-m2_t0`, `views-0p4_t2`.
+- **Variant folders:**
+  - O-SCD: `data/variants/oscd/<id>/<pair>/<Scene>`
+  - MV3DCD: `data/variants/mv3dcd/<id>/<Scene>/<pair>`
+  - `<pair>` is `Instance_1`, or `null-Instance_1-Instance_2` for no-change pairs.
+- **Run folders:** `runs/<experiment>/<method>/<arm>/<id>/<pair>/<Scene>/s<seed>`.
 
 Variant datasets **symlink** every unchanged file (reference images, reference reconstruction, `sparse/`, `gt_mask/`) and write only the perturbed inference images.
 
@@ -234,7 +241,10 @@ Apply these as a patch file to the pinned commits. Keep each change behind a fla
 ## 7. Perturbation specification (Yashwardhan, weeks 2–3)
 
 ### 7.0 Rules shared by all perturbations
-- **Deterministic randomness.** Each image's random parameters come from `seed = int(md5(f"{scene}|{instance}|{image}|{stressor}|{severity}|{trial}").hexdigest()[:8], 16)`. Do **not** use Python's `hash()`, which changes between processes.
+- **Deterministic randomness.** Each image's random parameters come from `seed = int(md5(f"{scene}|{stream}|{image}|{stressor}|{severity}|{trial}").hexdigest()[:8], 16)`.
+  - `stream` is `inf` for post-change frames, so both instances and both methods get the **same** perturbation of the same image.
+  - For no-change pairs, `stream` is `ref:<instance>`.
+  - Do **not** use Python's `hash()`, which changes between processes.
 - **Work in linear light.** Convert sRGB to linear before blur and exposure, then convert back:
   - `lin = x/12.92` if `x ≤ 0.04045`, else `((x+0.055)/1.055)^2.4`;
   - the inverse is `12.92·y` if `y ≤ 0.0031308`, else `1.055·y^(1/2.4) − 0.055`.
@@ -503,8 +513,8 @@ Each card lists: goal · inputs · procedure · runs · outputs · pass / decisi
 - **Owner:** all three.
 
 ### E4 — Main robustness sweep (weeks 5–6) → H1
-- **O-SCD:** 20 instances × (blur 4 + exposure 4 + views 3 levels × 3 trials) = 20 × 17 = **340 runs**. Each run yields online **and** refined masks.
-- **MV3DCD, protocol A:** 5 scenes × 2 instances × 17 = **170 runs**. The 5 scenes: Cantina, Printing Area, Meeting Room, Garden, Porch (indoor/outdoor, FF/360° balanced).
+- **O-SCD:** 20 instances × (identity 1 + blur 4 + exposure 4 + views 3 levels × 3 trials) = 20 × 18 = **360 runs**. Each run yields online **and** refined masks.
+- **MV3DCD, protocol A:** 5 scenes × 2 instances × 18 = **180 runs**, plus 10 reference-cache runs. The 5 scenes: Cantina, Printing Area, Meeting Room, Garden, Porch (indoor/outdoor, FF/360° balanced).
 - **MV3DCD, protocol B (tier 2):** the same 10 instances × 8 blur/exposure levels = 80 runs, plus COLMAP jobs.
 - **Tier 2:** local illumination, 3 levels × 20 instances (O-SCD) = 60 runs.
 - **Outputs:** degradation curves with CIs, s\* table, FP/FN decomposition, edge-FP share, component recall by size.
@@ -563,12 +573,12 @@ Degrade the map instead of the revisit. This needs new reconstructions, so it is
 |---|---|---|---|
 | E1 | 60 | 40 | |
 | E2 | 20 | — | Identity variant |
-| E3 | ~70 | ~70 | 2 scenes × 2 instances × extended grid |
-| E4 | 340 (+60 tier 2) | 170 (+80 tier 2) | |
+| E3 | 120 (68 + 52 null) | 68 | 2 scenes × 2 instances × extended grid |
+| E4 | 360 (+60 tier 2) | 180 (+80 tier 2) | |
 | E5 | 200 (short) | (25 tier 2) | |
 | E7 | 120 | — | |
 | E9 / E10 | 60 + 30 | — | Stretch |
-| **Total MVP** | **≈ 810** | **≈ 280** | |
+| **Total MVP** | **≈ 880** | **≈ 290** | Plus ≈ 54 short MV3DCD reference-cache runs |
 
 **Per-run cost (estimate).**
 - **O-SCD: 2–5 min.**
@@ -579,7 +589,7 @@ Degrade the map instead of the revisit. This needs new reconstructions, so it is
     - (b) process several variants per job to amortize startup.
 - **MV3DCD: 5–8 min** with the reference checkpoint reused (the paper reports 479 s including the reference).
 
-**Total ≈ 810 × 4 min + 280 × 7 min ≈ 54 + 33 ≈ 90 GPU-hours** for the MVP, well within a semester's cluster allocation if split into SLURM arrays.
+**Total ≈ 880 × 4 min + 290 × 7 min ≈ 59 + 34 ≈ 95 GPU-hours** for the MVP, well within a semester's cluster allocation if split into SLURM arrays.
 
 **GPU assumption.** These are **RTX 4090-class (24 GB) hours**, extrapolated from the only published timings (both papers used a single RTX 4090); none was measured. An A100 should be in the same range for this workload; a V100 or a small MIG slice would be slower, and may run out of memory. Much of an O-SCD run is startup (model loading, `torch.compile`, CPU keypoint matching), which does not speed up on a faster GPU. The two speed-ups above could cut O-SCD to roughly 15–25 GPU-hours. **Recompute the budget from E0 timings on the GPU you actually get.**
 

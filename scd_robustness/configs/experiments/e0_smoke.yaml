@@ -1,0 +1,20 @@
+# E0 — smoke test: one instance per method, released settings, clean data.
+# Pass = masks written, evaluation summary sensible, timings recorded (replace the plan's estimates).
+name: e0_smoke
+paths: ../paths.yaml
+perturbations: ../perturbations.yaml
+
+methods:
+  oscd:
+    scenes: [Garden]
+    pairs: [Instance_1]
+    seeds: [0]
+  mv3dcd:
+    scenes: [Garden]
+    pairs: [Instance_1]
+    seeds: [0]
+    arms:
+      default: {reference: train}     # self-contained run (no reference cache yet)
+
+sweep:
+  clean: [0]

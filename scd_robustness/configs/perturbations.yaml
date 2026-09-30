@@ -1,0 +1,69 @@
+# Stressor catalog (experiment_plan.md §7). Experiments pick stressors by name and list severities.
+#
+# kind: clean        symlink the original files (no decode / re-encode) — reproduction runs (E1)
+# kind: photometric  decode -> linear RGB -> fn(severity) -> sRGB -> re-encode under the ORIGINAL
+#                    file name and format; the `identity` stressor goes through the same re-encode, so
+#                    it is the right severity-0 baseline for every photometric sweep
+# kind: coverage     choose which post-change frames exist; images themselves are untouched
+#
+# Severities are in native-resolution units. Randomness is seeded per image from
+# md5(scene|stream|image|stressor|severity|trial), identical across instances and methods.
+
+io:
+  jpeg_quality: 100     # re-encode quality for JPEG sources (4:4:4 chroma when OpenCV supports it)
+  png_compression: 3
+  workers: 8            # parallel image workers per variant (match --cpus-per-task)
+
+stressors:
+  clean: {kind: clean}
+  identity: {kind: photometric, fn: identity}
+
+  blur:                       # severity = motion-blur kernel length in native pixels
+    kind: photometric
+    fn: motion_blur
+    params: {angle_deg: random}     # uniform in [0, 180) per image; or a fixed number
+
+  exposure:                   # severity = EV; linear light is multiplied by 2^EV, then clipped
+    kind: photometric
+    fn: exposure
+
+  white_balance:              # severity = k; gains (1+k, 1, 1-k) on R, G, B
+    kind: photometric
+    fn: white_balance
+
+  gain_field:                 # severity = amplitude a; gain = 1 + a * smooth random field in [-1, 1]
+    kind: photometric
+    fn: gain_field
+    params: {sigma_frac: 0.125, min_gain: 0.05}
+
+  shadow:                     # severity = darkening a inside one random feathered polygon
+    kind: photometric
+    fn: shadow
+    params: {area_frac: [0.10, 0.30], feather_px: 15, n_vertices: 6}
+
+  noise:                      # severity = level key; [photons at white, read-noise sigma], linear light
+    kind: photometric
+    fn: poisson_gaussian
+    params:
+      levels: {1: [400, 0.002], 2: [100, 0.005], 3: [25, 0.01]}
+
+  night_motion:               # combined stressor; severity is only a label (use 1)
+    kind: photometric
+    fn: compose
+    params:
+      steps:
+        - {fn: motion_blur, severity: 32, params: {angle_deg: random}}
+        - {fn: exposure, severity: -2}
+
+  views:                      # severity = fraction of post-change frames KEPT (nested random subsets)
+    kind: coverage
+    mode: random_nested
+
+  views_gap:                  # severity = fraction DROPPED as one contiguous angular sector (needs COLMAP poses)
+    kind: coverage
+    mode: sector
+
+  # burst: only `count` consecutive frames of the stream are blurred (O-SCD online memory test)
+  burst_start:  {kind: photometric, fn: motion_blur, params: {angle_deg: random}, subset: {position: start,  count: 3}}
+  burst_middle: {kind: photometric, fn: motion_blur, params: {angle_deg: random}, subset: {position: middle, count: 3}}
+  burst_end:    {kind: photometric, fn: motion_blur, params: {angle_deg: random}, subset: {position: end,    count: 3}}

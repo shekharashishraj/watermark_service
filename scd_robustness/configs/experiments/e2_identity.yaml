@@ -1,0 +1,14 @@
+# E2 — perturbation-pipeline check: the identity variant (decode -> re-encode only) must match
+# E1 clean results within the noise floor, otherwise re-encoding itself is a confound.
+name: e2_identity
+paths: ../paths.yaml
+perturbations: ../perturbations.yaml
+
+methods:
+  oscd:
+    scenes: all
+    pairs: [Instance_1, Instance_2]
+    seeds: [0]
+
+sweep:
+  identity: [0]

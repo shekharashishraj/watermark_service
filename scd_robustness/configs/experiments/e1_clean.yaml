@@ -1,0 +1,23 @@
+# E1 — clean reproduction and noise floor (gate G1).
+# O-SCD online ~0.486 / refined ~0.552 mIoU (+-0.03); MV3DCD ~0.46-0.48.
+name: e1_clean
+paths: ../paths.yaml
+perturbations: ../perturbations.yaml
+
+methods:
+  oscd:
+    scenes: all
+    pairs: [Instance_1, Instance_2]
+    seeds: [0, 1, 2]
+  mv3dcd:                              # all 20 instances once
+    scenes: all
+    pairs: [Instance_1, Instance_2]
+    seeds: [0]
+  mv3dcd_repeats:                      # + 2 repeats on the 5-scene subset for the noise floor
+    method: mv3dcd
+    scenes: [Cantina, Printing_area, Meeting_room, Garden, Porch]
+    pairs: [Instance_1, Instance_2]
+    seeds: [1, 2]
+
+sweep:
+  clean: [0]

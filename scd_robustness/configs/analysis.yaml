@@ -119,7 +119,8 @@ h5:                                  # cheap per-frame signals predict frame fai
   experiment: e4
   system: oscd_online
   fail_iou: 0.3                      # frame failure: IoU < 0.3 (missing prediction = empty mask)
-  signals:                           # risk: which end is risky; transform before use; fill for missing
+  # risk: which end of a signal is risky (pre-registered; check on the E3 pilot, freeze before E4)
+  signals:                           # transform before use; fill = value for missing entries
     log_n_ba_inliers:  {risk: low,  transform: log1p, fill: 0}
     log_n_pnp_inliers: {risk: low,  transform: log1p, fill: 0}
     log_n_corr:        {risk: low,  transform: log1p, fill: 0}

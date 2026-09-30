@@ -8,13 +8,15 @@ and evaluate every run the same way.
 - The papers: [`docs/papers_explained.md`](docs/papers_explained.md).
 
 ```
-configs/      paths.yaml, perturbations.yaml (stressor catalog), experiments/e*.yaml (one per plan stage)
+configs/      paths.yaml, perturbations.yaml (stressor catalog), experiments/e*.yaml (one per plan stage),
+              analysis.yaml (pre-registered analysis)
 envs/         scd-tools.yml (CPU), oscd.yml (py3.12, CUDA 12.8), mv3dcd.yml (py3.8, CUDA 12.4)
 patches/      oscd.patch, mv3dcd.patch — applied to the pinned upstream commits
 setup/        sol.env + numbered one-time setup scripts + smoke-test job
-scd/          library: perturbations, variant builder, planner, runner, evaluator, metrics
-scripts/      CLIs: scd_plan, make_variants, run_oscd, run_mv3dcd, evaluate_run, collect_results, check_dataset
-slurm/        array-job scripts + submit_experiment.sh (dependency chain)
+scd/          library: perturbations, variant builder, planner, runner, evaluator, metrics, stats, analysis/
+scripts/      CLIs: scd_plan, make_variants, run_oscd, run_mv3dcd, evaluate_run, collect_results, check_dataset,
+              analyze, make_figures
+slurm/        array-job scripts + submit_experiment.sh (dependency chain) + analyze.sbatch
 tests/        CPU tests on a synthetic dataset (pytest)
 ```
 
@@ -146,9 +148,43 @@ Other fields:
 
 MV3DCD's reference 3DGS is trained on pre-change images only. It is therefore built **once** per scene/instance/seed (`runs_mv3dcd_refcache.jsonl`) and linked into every variant run.
 
+## Analysis and statistics
+**`configs/analysis.yaml`** is the pre-registered analysis. It holds:
+- which experiments and systems to compare;
+- how each severity maps to a magnitude;
+- the bootstrap and Holm settings;
+- H1–H5 with their thresholds, trust signals and scene folds.
+
+Freeze it with `docs/PREREGISTRATION.md` before E4.
+
+```bash
+scd_activate scd-tools
+python scripts/analyze.py --config configs/analysis.yaml          # -> $SCD_ROOT/results/analysis/main/
+python scripts/make_figures.py --config configs/analysis.yaml     # -> .../main/figures/f1…f8 (png + pdf)
+python scripts/analyze.py --only gates,h1 --n-boot 1000          # quick look while runs are still going
+sbatch -p <partition> -q <qos> -o $SCD_ROOT/logs/slurm/analysis-%j.out slurm/analyze.sbatch   # as a CPU job
+```
+
+It works on partial results: whatever has finished is analysed, and the rest is listed in the report's coverage table.
+
+**Outputs:**
+- `report.md`: coverage, then gate G1, noise floor, E2 identity check, the primary-test decisions with Holm, s\* table, false alarms, calibration transfer, online/refined/matched attribution, trust rule and compute used.
+- `results.json`
+- `tables/*.csv`: every table, including per-scene values.
+- `data/`: the loaded runs, frames, components and histograms, for custom analysis in pandas.
+
+| Module | What it does |
+|---|---|
+| `scd/stats.py` | Exact Wilcoxon (tied ranks), Spearman, scene bootstrap, Holm, AUDC, hinge knee, scene-cluster AUROC, risk–coverage |
+| `scd/analysis/scene.py` | Scene values (the statistical unit), degradation curves with Δ and relative drop, noise floor, component recall |
+| `scd/analysis/calibration.py` | Reliability diagrams, clean-fitted isotonic recalibration and threshold transfer across scene folds |
+| `scd/analysis/hypotheses.py` | G1, identity check, H1 (trend + s\* + knee), H2, H3, H4 (AUDC) + E7 attribution and warm-up, H5 (LOSO model, trust rule) |
+
+**Power caveat.** MV3DCD runs on 5 scenes in `e4_main`, where the smallest attainable Wilcoxon p-value is 0.0625, so its primary tests can never pass. The report says so. Before E4, decide between running all 10 scenes and reporting MV3DCD as CIs only (`docs/experiment_plan.md` §10).
+
 ## Testing locally (no GPU)
 ```bash
-scd_activate scd-tools && python -m pytest -q tests      # synthetic dataset, both layouts, end to end
+scd_activate scd-tools && python -m pytest -q tests      # synthetic dataset and synthetic study, end to end
 ```
 
 ## Troubleshooting

@@ -177,16 +177,19 @@ Record for each: wall-clock time per stage, peak GPU memory, and output folder s
 ```
 scd_robustness/
   docs/      papers_explained.md, experiment_plan.md (+ PREREGISTRATION.md, dataset_facts.md to add)
-  configs/   paths.yaml, perturbations.yaml (stressor catalog), experiments/e0…e7 *.yaml
+  configs/   paths.yaml, perturbations.yaml (stressor catalog), experiments/e0…e7 *.yaml,
+             analysis.yaml (pre-registered analysis: hypotheses, thresholds, signals, folds)
   envs/      scd-tools.yml, oscd.yml, mv3dcd.yml     (isolated prefix envs with their own CUDA toolkit)
   patches/   oscd.patch, mv3dcd.patch                (applied to the pinned commits)
   setup/     sol.env, 01_fetch_code … 04_prestage_models, 05_smoke_test.sbatch
-  scd/       perturb, variants, plan, runner, evaluate, metrics, imageio, config, colmap_rw
-  scripts/   scd_plan, make_variants, run_oscd, run_mv3dcd, evaluate_run, collect_results, check_dataset
-  slurm/     variants / oscd / mv3dcd array jobs + submit_experiment.sh
+  scd/       perturb, variants, plan, runner, evaluate, metrics, imageio, config, colmap_rw, stats,
+             analysis/ (data, scene, calibration, hypotheses, report)
+  scripts/   scd_plan, make_variants, run_oscd, run_mv3dcd, evaluate_run, collect_results, check_dataset,
+             analyze (§10 statistics, H1–H5, report), make_figures (F1–F8)
+  slurm/     variants / oscd / mv3dcd array jobs + submit_experiment.sh + analyze.sbatch (CPU)
   tests/     synthetic-dataset tests (pytest)
 ```
-Still to write: pose protocol B (COLMAP re-registration), `render_heldout.py` (P8), E9 compression, analysis/statistics scripts.
+Still to write: pose protocol B (COLMAP re-registration), `render_heldout.py` (P8), E9 compression, the edge-FP share (§9.2) and FAR split by reference alpha (§8.2), which need reference renders, and the F9 qualitative strips.
 
 ### 5.2 Variant and run naming
 - **Variant id:** `{stressor}-{severity}_t{trial}`, e.g. `blur-32_t0`, `exposure-m2_t0`, `views-0p4_t2`.
@@ -476,6 +479,23 @@ Wall-clock time per stage and per frame (O-SCD FPS), measured on the same GPU ty
 
   That is 15 tests. Apply **Holm–Bonferroni** at α = 0.05; everything else is exploratory.
 - **Always report effect sizes with CIs.** Show per-scene points on every plot; 10 dots are more honest than a bar.
+
+**Implementation** (`scripts/analyze.py`, settings in `configs/analysis.yaml`):
+- **Scene values.** Run-summary metrics (mIoU, F1, FAR, …) are averaged over trials and seeds within an instance, then over instances. Histogram metrics (AUPRC, CW_FP, ECE, …) are computed on the histograms pooled over the scene's runs. Frames without a prediction enter the histograms as p = 0, the same as the empty mask used for mIoU.
+- **Severity axes.** Every stressor maps to a magnitude where 0 is the baseline (the `identity` runs of the same experiment) and larger is worse. Exposure is split into darker and brighter curves for s\*; its trend test uses |EV| with both signs.
+- **Trend tests** (H1–H3). Take the per-scene Spearman ρ over the baseline plus every level of the stressor, then run an exact Wilcoxon signed-rank test on the ρ values. For H3 each scene's ρ is first averaged over the three stressors, so there is one test per metric and method.
+- **H5 p-value.** The p-value for the leave-one-scene-out AUROC is `2 × P(AUROC* ≤ 0.5)` under a bootstrap that resamples scenes.
+- **Holm correction.** It is applied over the 15 primary tests. A test that could not run counts as p = 1.
+
+**Power caveat.** With n scenes, the smallest attainable two-sided Wilcoxon p-value is 2/2ⁿ:
+- **n = 10 (O-SCD):** the minimum is 0.002. That passes the first Holm step (0.05/15 = 0.0033) only if every scene moves in the same direction.
+- **n = 5 (MV3DCD in E4):** the minimum is 0.0625, so the five MV3DCD primary tests (H1 × 3 stressors, H3 × 2 metrics) **can never reject**.
+
+Before E4, choose one fix and write it into `PREREGISTRATION.md`:
+- run MV3DCD on all 10 scenes (+180 runs, about 21 GPU-hours), or
+- move the MV3DCD tests out of the primary family and report only their CIs.
+
+The report flags this automatically.
 
 ---
 

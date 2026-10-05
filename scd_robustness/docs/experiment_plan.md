@@ -49,7 +49,7 @@ We also compare **online vs offline** behavior with a control that separates "ac
 | **H5** | A cheap per-frame signal predicts frame failure | Frame failure = IoU < 0.3 (or FAR > 1% on null frames); signals in §9.7 | Leave-one-scene-out AUROC with bootstrap CI above 0.5. Report the resulting trust rule and its precision / coverage. | "Practical recommendation" |
 
 **Predictions** (for the discussion, not decision rules):
-- Blur hits O-SCD earlier than MV3DCD at the same native blur. Reasons: O-SCD runs at 2× the resolution and relies on XFeat for pose.
+- Blur hits O-SCD earlier than MV3DCD at the same native blur. Reasons: O-SCD runs at 2× the resolution and relies on XFeat for pose. The O-SCD supplementary supports this: its authors report that XFeat is sensitive to image size (at least VGA is needed) and to in-plane rotation.
 - Global exposure shifts are partly cancelled by per-frame normalization.
 - Coverage loss hurts online masks more than refined masks.
 - The PnP inlier count is the best single trust signal for O-SCD.
@@ -313,7 +313,7 @@ Poisson–Gaussian noise in linear space: `y = Poisson(lin·k)/k + N(0, σ_r²)`
 ### 8.1 Pose protocols
 - **O-SCD: self-localization (end-to-end).** Poses come from its own XFeat + PnP on the degraded frames.
   - Rejected frames produce no mask; they are scored as empty masks and counted in "pose failure rate".
-  - Optional analysis: align O-SCD's estimated camera centers to the offline COLMAP poses (similarity transform on camera centers) and report rotation/translation error per frame.
+  - Optional analysis: align O-SCD's estimated camera centers to the offline COLMAP poses (similarity transform on camera centers) and report rotation/translation error per frame. Clean baseline from the O-SCD supplementary (Table 6): 0.09° rotation error under similar lighting and 0.13° under different lighting.
 - **MV3DCD protocol A: oracle poses.** Use the joint COLMAP model shipped in `PASLCD.zip` (computed from clean images). This isolates the change-detection stage. **Label every result "oracle poses".**
 - **MV3DCD protocol B: re-registration (tier 2; blur and exposure only).** Reproduces the paper's actual pipeline, where degraded after-photos must be registered to the reference.
   1. Fresh COLMAP on reference images + degraded test images:
@@ -516,7 +516,8 @@ Each card lists: goal · inputs · procedure · runs · outputs · pass / decisi
   - MV3DCD: all 20 instances × 1, plus 5 scenes × 2 instances × 2 extra repeats (40 runs).
 - **Gate G1:**
   - O-SCD online mIoU within **0.486 ± 0.03**; refined within **0.552 ± 0.03**. The README says the FastGS version runs slightly *better*.
-  - MV3DCD within **0.46–0.48 ± 0.03**.
+  - MV3DCD within **0.478 ± 0.03**. This is the released code as re-run by the O-SCD authors; MV3DCD's own paper reports 0.461.
+  - Per instance, as a finer check (O-SCD supplementary, Table 7; mIoU under similar / different lighting): O-SCD online **0.503 / 0.469**, refined **0.569 / 0.535**, MV3DCD **0.498 / 0.457**.
   - The patched evaluator's paper-mode number equals the released evaluator's.
 - **If G1 fails:** check resolution, versions, seeds and GPU type; compare per-scene numbers with the per-scene tables. Robustness conclusions use *relative* drops, so a small absolute gap is acceptable if documented.
 - **Owner:** Ashish.

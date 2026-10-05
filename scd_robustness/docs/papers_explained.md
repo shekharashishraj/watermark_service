@@ -2,7 +2,7 @@
 
 Companion to [`experiment_plan.md`](experiment_plan.md).
 
-**Sources.** MV3DCD paper (arXiv 2412.03911v2, CVPR 2025) and code (commit `b45606c`); O-SCD paper (arXiv 2511.12370, CVPR 2026) and code (commit `3abfeaa`); GS-DIFF preprint (arXiv 2605.07203). Numbers are quoted from these papers.
+**Sources.** MV3DCD paper (arXiv 2412.03911v2, CVPR 2025) and code (commit `b45606c`); O-SCD paper (arXiv 2511.12370, CVPR 2026), its supplementary (CVPR 2026 open access) and code (commit `3abfeaa`); GS-DIFF preprint (arXiv 2605.07203). Numbers are quoted from these papers.
 
 Tags used below:
 - **(code)** — read in the released code.
@@ -161,7 +161,7 @@ Earlier pose-agnostic methods (OmniPoseAD, SplatPose) compared each after-photo 
   - Instance 2 (different lighting): 0.444 / 0.598.
   - Best competitor, CYWS-2D: 0.273 / 0.398.
 - **Per scene.** Best is Printing Area (0.588); worst is Playground (0.249), a large 360° outdoor scene with small changes.
-- **Reproduction target.** O-SCD's and GS-DIFF's tables list MV3DCD at 0.478 / 0.628. That matches MV3DCD's own Instance-1 number, or possibly a re-run of the released code (its README says results come out slightly better than reported). **Use 0.46–0.48 as your reproduction band.**
+- **Reproduction target.** O-SCD's and GS-DIFF's tables list MV3DCD at 0.478 / 0.628. This is a re-run of the released code, not MV3DCD's own Instance-1 number: O-SCD's supplementary (Table 7) reports 0.498 / 0.645 under similar lighting and 0.457 / 0.611 under different lighting, which average to 0.478 / 0.628. **Use 0.478 as your reproduction target for the released code** (0.498 for Instance 1, 0.457 for Instance 2).
 - **Lighting robustness (Table 7).** Relative drop from similar to different lighting:
 
   | Method | ΔmIoU | ΔF1 |
@@ -299,6 +299,17 @@ Result on PASLCD: an updated map in **42 s**, versus **550 s** to rebuild from s
   | MV3DCD-style thresholds + product instead of SSF | 0.350 |
 
   **Take-away:** the soft fusion of both cues across views is what makes it work.
+- **By lighting (supplementary, Table 7; mIoU / F1).** These are your per-instance reproduction targets, and the real-lighting anchor for O-SCD.
+
+  | Setting | Similar lighting (Instance 1) | Different lighting (Instance 2) | Relative mIoU drop |
+  |---|---|---|---|
+  | O-SCD online | 0.503 / 0.652 | 0.469 / 0.624 | 6.8% |
+  | O-SCD offline | 0.569 / 0.706 | 0.535 / 0.682 | 6.0% |
+  | MV3DCD (re-run by the O-SCD authors) | 0.498 / 0.645 | 0.457 / 0.611 | 8.2% |
+
+- **Pose estimation: accuracy and stated limits (supplementary, Table 6 and Sec. 7).**
+  - Against COLMAP poses on clean images, the rotation error is 0.09° under similar lighting and 0.13° under different lighting, at about 30 ms per frame. No pose failure rate is reported.
+  - The authors report that XFeat struggles with unconstrained in-plane rotation and is sensitive to image size: inputs should be at least VGA (640×480).
 - **Hardware.** RTX 4090, images at 1008×560 (code: `--resolution 4`).
 
 ### 3.6 Outputs and score semantics

@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic Walkthrough Harness</title>
+<style>
+:root{
+  --bg:#f6f5f1; --panel:#ffffff; --ink:#1d1f23; --muted:#5e636b; --line:#dedbd3;
+  --accent:#2f5bd3; --rem:#d23c3c; --add:#1f9a5a; --mov:#d98a12; --app:#8a4fd1;
+  --base:#7b8794; --insp:#2f5bd3; --dev:#d23c3c;
+  --room-living:#efe6d6; --room-kitchen:#e3eedf; --room-hallway:#ececec; --room-bedroom:#e2e8f3; --room-bathroom:#e1f0f0;
+  --wall:#3b3f46; --chip:#eef1f8;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15171b; --panel:#1e2127; --ink:#e7e8ea; --muted:#a2a7b0; --line:#343841;
+    --accent:#7d9cff; --rem:#ff6b6b; --add:#4fd08b; --mov:#ffb547; --app:#b98cff;
+    --base:#8c97a5; --insp:#7d9cff; --dev:#ff6b6b;
+    --room-living:#2c2822; --room-kitchen:#232b22; --room-hallway:#26272a; --room-bedroom:#22262f; --room-bathroom:#202a2b;
+    --wall:#c9ccd2; --chip:#262b36;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15171b; --panel:#1e2127; --ink:#e7e8ea; --muted:#a2a7b0; --line:#343841;
+  --accent:#7d9cff; --rem:#ff6b6b; --add:#4fd08b; --mov:#ffb547; --app:#b98cff;
+  --base:#8c97a5; --insp:#7d9cff; --dev:#ff6b6b;
+  --room-living:#2c2822; --room-kitchen:#232b22; --room-hallway:#26272a; --room-bedroom:#22262f; --room-bathroom:#202a2b;
+  --wall:#c9ccd2; --chip:#262b36;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 16px 64px}
+h1{font-size:28px;line-height:1.2;margin:0 0 6px}
+h2{font-size:20px;margin:44px 0 6px}
+h3{font-size:15px;margin:0 0 4px}
+p{margin:6px 0}
+.lede{color:var(--muted);max-width:760px}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--chip);padding:1px 5px;border-radius:4px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:20px 0 0}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.stat b{display:block;font-size:22px;line-height:1.2}
+.stat span{color:var(--muted);font-size:13px}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;counter-reset:s;margin-top:12px}
+.step{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;position:relative}
+.step:before{counter-increment:s;content:counter(s);position:absolute;top:12px;right:14px;font-weight:700;color:var(--accent)}
+.step h3{padding-right:20px}
+.step p{font-size:13.5px;color:var(--muted)}
+.planwrap{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:14px;margin-top:12px}
+@media (max-width:820px){.planwrap{grid-template-columns:1fr}}
+svg{display:block;width:100%;height:auto}
+.controls{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+button.t{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;padding:4px 12px;cursor:pointer}
+button.t[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+label.chk{font-size:13px;display:inline-flex;align-items:center;gap:5px;margin-right:12px;color:var(--muted)}
+input[type=range]{width:100%}
+.legend{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:5px}
+.sw{display:inline-block;width:18px;height:3px;vertical-align:middle;margin-right:6px;border-radius:2px}
+.sq{display:inline-block;width:11px;height:11px;vertical-align:middle;margin-right:6px;border-radius:2px;border:2px solid}
+.framebox{font-size:13px;margin-top:8px}
+.framebox b{font-size:15px}
+img.px{image-rendering:pixelated;width:100%;height:auto;display:block;border-radius:6px;background:#000}
+.anat{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:12px}
+.anat figure,.lad figure{margin:0}
+figcaption{font-size:13px;color:var(--muted);margin-top:5px}
+figcaption b{color:var(--ink)}
+.changes{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}
+.chg{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;cursor:pointer}
+.chg.on{outline:2px solid var(--accent)}
+.chg .trip{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px}
+.chg .trip span{font-size:11px;color:var(--muted)}
+.tag{display:inline-block;font-size:11.5px;font-weight:600;border-radius:999px;padding:1px 8px;color:#fff;margin-right:6px;text-transform:uppercase;letter-spacing:.03em}
+.lad{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-top:12px}
+.lad .grp{grid-column:1/-1;font-weight:600;font-size:14px;margin-top:6px;border-bottom:1px solid var(--line);padding-bottom:3px}
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-top:12px}
+@media (max-width:820px){.two{grid-template-columns:1fr}}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.tablewrap{overflow-x:auto}
+footer{margin-top:48px;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<h1>How the synthetic walkthrough harness works</h1>
+<p class="lede">The harness builds an apartment, scans it once as a "before" visit, changes it, and scans it again as an "after" visit. The second scan comes from a simulated phone with noise and drift. Every pixel of the "after" scan knows which object it shows and whether that object changed, so any change detector can be scored exactly. The pictures below are one real scenario (held-out seed, kind <code>mixed</code>) rendered by <code>scene_change/harness</code>.</p>
+
+<div class="stats" id="stats"></div>
+
+<h2>The pipeline</h2>
+<p class="muted">Each step is a function in <code>scene_change/harness/</code>; one seed gives the same scenario every time.</p>
+<div class="steps">
+  <div class="step"><h3>Build the apartment</h3><p>Five rooms (living, kitchen, hallway, bedroom, bathroom) with walls, doors, furniture, small items and wall items. Everything is axis-aligned coloured boxes, about 95 objects.</p></div>
+  <div class="step"><h3>Plan the walks</h3><p>A baseline walk and a later inspection walk through every room: walking segments plus slow pans at each stop, like a person filming with a phone.</p></div>
+  <div class="step"><h3>Change the scene</h3><p>Eight changes per <code>mixed</code> scenario: 2 removed, 2 added, 2 moved, 2 appearance. The inspection visit also gets different lighting (exposure, white balance, lamps).</p></div>
+  <div class="step"><h3>Ray-cast RGB-D</h3><p><code>BoxRenderer</code> casts a ray per pixel at 160×120 and returns colour, metric depth and the id of the object hit. Shading uses ambient, ceiling and lamp terms.</p></div>
+  <div class="step"><h3>Add sensor realism</h3><p>Depth noise σ = 0.0015 + 0.0025·z² m, 1% dropout, flying pixels at depth edges, RGB noise, exposure jitter, and drifting device poses (VIO drift).</p></div>
+  <div class="step"><h3>Write ground truth</h3><p>Per-frame change masks from the object-id maps (which pixels show a changed object), the change list, and the true poses. Detectors only ever see the noisy capture.</p></div>
+</div>
+
+<h2>The apartment from above</h2>
+<p class="muted">Room floors, object footprints in their material colour, and both walks. Drag the slider to move along the inspection walk; the red marker is where the phone thinks it is. Click a change card further down to find it here.</p>
+<div class="planwrap">
+  <div class="panel">
+    <div class="controls">
+      <button class="t" id="vBefore" aria-pressed="false">Before (baseline)</button>
+      <button class="t" id="vAfter" aria-pressed="true">After (inspection)</button>
+    </div>
+    <div class="controls">
+      <label class="chk"><input type="checkbox" id="cBase" checked> baseline walk</label>
+      <label class="chk"><input type="checkbox" id="cInsp" checked> inspection walk</label>
+      <label class="chk"><input type="checkbox" id="cDev" checked> device estimate</label>
+      <label class="chk"><input type="checkbox" id="cChg" checked> mark changes</label>
+    </div>
+    <div id="plan"></div>
+    <input type="range" id="slider" min="0" value="0" aria-label="inspection frame">
+  </div>
+  <div class="panel legend" id="legend">
+    <div><span class="sw" style="background:var(--base)"></span>baseline walk</div>
+    <div><span class="sw" style="background:var(--insp)"></span>inspection walk (true)</div>
+    <div><span class="sw" style="background:var(--dev)"></span>inspection walk (device, drifted)</div>
+    <div><span class="sq" style="border-color:var(--rem)"></span>removed</div>
+    <div><span class="sq" style="border-color:var(--add)"></span>added</div>
+    <div><span class="sq" style="border-color:var(--mov)"></span>moved (arrow: old → new)</div>
+    <div><span class="sq" style="border-color:var(--app)"></span>appearance changed</div>
+    <div class="framebox" id="framebox"></div>
+  </div>
+</div>
+
+<h2>Anatomy of one frame</h2>
+<p class="muted" id="anatIntro"></p>
+<div class="anat" id="anat"></div>
+
+<h2>The eight changes</h2>
+<p class="muted">For each change: the baseline scene rendered from the inspection pose, the noisy inspection frame, and the ground-truth mask. "Seen in" counts the inspection frames where it covers enough pixels to be judged.</p>
+<div class="changes" id="changes"></div>
+
+<h2>Stressors: the same frame, degraded</h2>
+<p class="muted">The robustness study re-runs every detector on these degraded captures and finds where each one breaks. Image stressors hit every method; depth noise only hits methods that use depth. Coverage, fewer views and map compression act on whole walks or maps, so they have no single picture.</p>
+<div class="lad" id="ladder"></div>
+
+<h2>Other scenario kinds</h2>
+<div class="two">
+  <div class="panel">
+    <h3>Partial walk</h3>
+    <p class="muted small" id="partialText"></p>
+    <div id="partialPlan"></div>
+  </div>
+  <div class="panel">
+    <h3>What gets scored</h3>
+    <div class="tablewrap"><table>
+      <tr><th>Kind</th><th>Changes</th><th>Tests</th></tr>
+      <tr><td><code>mixed</code></td><td>8</td><td>Finding and classifying each change; frame F1 and IoU against the masks</td></tr>
+      <tr><td><code>clean</code></td><td>0</td><td>False alarms: noise, drift and new lighting with nothing changed</td></tr>
+      <tr><td><code>partial</code></td><td>8</td><td>Honesty about coverage: changes in unvisited rooms must come back "not checked", not "fine"</td></tr>
+    </table></div>
+    <p class="muted small" style="margin-top:10px">Scores: per-change recall and type accuracy, pixel frame F1/IoU (PASLCD style), false-alarm pixel rate on frames without change, calibration of change scores (ECE, AP, Brier), and the verdict the report would give.</p>
+  </div>
+</div>
+
+<footer>Built from <code>scene-change-3d/scene_change/harness</code> (generator, renderer, sensor model) and <code>scene_change/stress.py</code> (stressors). Images are the harness's own 160×120 output, shown enlarged without smoothing.</footer>
+</main>
+
+<script>
+const A = /*ASSETS*/null;
+const S = A.scene, P = A.paths;
+const $ = id => document.getElementById(id);
+const fmt = (x,d=1) => Number(x).toFixed(d);
+
+// ---- stats
+const nObj = Object.values(S.counts).reduce((a,b)=>a+b,0);
+[[`${fmt(S.width)} × ${fmt(S.depth)} m`, `apartment, ${S.rooms.length} rooms`],
+ [nObj, `objects (${S.counts.furniture} furniture, ${S.counts.item} items)`],
+ [A.frames.baseline, 'baseline frames'],
+ [A.frames.inspection, 'inspection frames'],
+ [`${A.frames.size[0]}×${A.frames.size[1]}`, 'RGB-D resolution'],
+ [A.changes.length, 'ground-truth changes'],
+ [`${fmt(P.drift_cm_max,1)} cm`, 'max pose drift'],
+].forEach(([v,l]) => $('stats').insertAdjacentHTML('beforeend', `<div class="stat"><b>${v}</b><span>${l}</span></div>`));
+
+// ---- object diff
+const byId = arr => Object.fromEntries(arr.map(o => [o.oid, o]));
+const B = byId(S.objects_before), F = byId(S.objects_after);
+const cen = o => { let x=0,y=0,n=0; o.boxes.forEach(b=>b.p.forEach(q=>{x+=q[0];y+=q[1];n++})); return [x/n,y/n]; };
+const diff = {};
+for (const id in B) {
+  if (!(id in F)) { diff[id] = 'removed'; continue; }
+  const pb = JSON.stringify(B[id].boxes.map(b=>[b.p,b.z])), pf = JSON.stringify(F[id].boxes.map(b=>[b.p,b.z]));
+  if (pb !== pf) diff[id] = 'moved';
+  else if (JSON.stringify(B[id].boxes.map(b=>b.c)) !== JSON.stringify(F[id].boxes.map(b=>b.c))) diff[id] = 'appearance';
+}
+for (const id in F) if (!(id in B)) diff[id] = 'added';
+const COL = {removed:'var(--rem)', added:'var(--add)', moved:'var(--mov)', appearance:'var(--app)'};
+
+// ---- plan drawing
+function planSVG(opts){
+  const pad = 0.25, Wm = S.width + 2*pad, Dm = S.depth + 2*pad, K = 100;
+  const X = x => ((x+pad)*K).toFixed(1), Y = y => ((S.depth - y + pad)*K).toFixed(1);
+  const pts = arr => arr.map(p => X(p[0])+','+Y(p[1])).join(' ');
+  let s = `<svg viewBox="0 0 ${(Wm*K).toFixed(0)} ${(Dm*K).toFixed(0)}" role="img" aria-label="floor plan">`;
+  S.rooms.forEach(r => {
+    const hl = (opts.skipped||[]).includes(r.name) ? ' fill-opacity="0.25"' : '';
+    s += `<rect x="${X(r.x0)}" y="${Y(r.y1)}" width="${((r.x1-r.x0)*K).toFixed(1)}" height="${((r.y1-r.y0)*K).toFixed(1)}" fill="var(--room-${r.name})"${hl}/>`;
+  });
+  if (opts.objects) {
+    const objs = opts.after ? S.objects_after : S.objects_before;
+    const boxes = [];
+    objs.forEach(o => o.boxes.forEach(b => boxes.push([b, o])));
+    boxes.sort((a,b) => a[0].z - b[0].z);
+    boxes.forEach(([b,o]) => {
+      const st = o.cat === 'structure';
+      const fill = st ? 'var(--wall)' : b.c;
+      s += `<polygon points="${pts(b.p)}" fill="${fill}" ${st?'':'stroke="rgba(0,0,0,.35)" stroke-width="1.5"'}/>`;
+    });
+  }
+  S.rooms.forEach(r => {
+    s += `<text x="${X((r.x0+r.x1)/2)}" y="${Y(r.y1)}" dy="34" text-anchor="middle" font-size="30" font-weight="600" fill="var(--muted)" style="paint-order:stroke;stroke:var(--bg);stroke-width:6px">${r.name}${(opts.skipped||[]).includes(r.name)?' (skipped)':(opts.half||[]).includes(r.name)?' (half)':''}</text>`;
+  });
+  if (opts.marks) {
+    for (const id in diff) {
+      const t = diff[id];
+      const show = opts.after ? t !== 'removed' : t !== 'added';
+      const o = (opts.after ? F : B)[id] || B[id] || F[id];
+      if (show) {
+        let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+        o.boxes.forEach(b=>b.p.forEach(q=>{x0=Math.min(x0,q[0]);y0=Math.min(y0,q[1]);x1=Math.max(x1,q[0]);y1=Math.max(y1,q[1]);}));
+        const m = 0.08;
+        const hi = opts.focus === +id;
+        s += `<rect x="${X(x0-m)}" y="${Y(y1+m)}" width="${((x1-x0+2*m)*K).toFixed(1)}" height="${((y1-y0+2*m)*K).toFixed(1)}" fill="none" stroke="${COL[t]}" stroke-width="${hi?10:6}" rx="8" ${t==='removed'?'stroke-dasharray="14 9"':''}/>`;
+      }
+      if (t === 'moved') {
+        const a = cen(B[id]), b = cen(F[id]);
+        s += `<line x1="${X(a[0])}" y1="${Y(a[1])}" x2="${X(b[0])}" y2="${Y(b[1])}" stroke="var(--mov)" stroke-width="5" stroke-dasharray="10 7" marker-end="url(#ar)"/>`;
+      }
+    }
+  }
+  s += `<defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--mov)"/></marker></defs>`;
+  (opts.paths||[]).forEach(([arr,col,w,dash]) => {
+    s += `<polyline points="${pts(arr)}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" ${dash?`stroke-dasharray="${dash}"`:''} opacity=".9"/>`;
+  });
+  if (opts.cam != null) {
+    const i = opts.cam, p = P.inspection[i], d = P.insp_dir[i], q = P.inspection_device[i];
+    const ang = Math.atan2(d[1], d[0]), f = 0.75, h = 0.5;
+    const L = [p[0]+f*Math.cos(ang+h), p[1]+f*Math.sin(ang+h)], R = [p[0]+f*Math.cos(ang-h), p[1]+f*Math.sin(ang-h)];
+    s += `<polygon points="${pts([p,L,R])}" fill="var(--insp)" fill-opacity=".22" stroke="var(--insp)" stroke-width="3"/>`;
+    s += `<circle cx="${X(q[0])}" cy="${Y(q[1])}" r="11" fill="var(--dev)" stroke="var(--panel)" stroke-width="3"/>`;
+    s += `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="11" fill="var(--insp)" stroke="var(--panel)" stroke-width="3"/>`;
+  }
+  return s + '</svg>';
+}
+
+let view = 'after', frame = 0, focus = null;
+function drawPlan(){
+  const paths = [];
+  if ($('cBase').checked) paths.push([P.baseline, 'var(--base)', 6, '4 10']);
+  if ($('cInsp').checked) paths.push([P.inspection, 'var(--insp)', 6]);
+  if ($('cDev').checked) paths.push([P.inspection_device, 'var(--dev)', 4]);
+  $('plan').innerHTML = planSVG({objects:true, after:view==='after', marks:$('cChg').checked, paths, cam:frame, focus});
+  const p = P.inspection[frame], q = P.inspection_device[frame];
+  const err = Math.hypot(p[0]-q[0], p[1]-q[1]) * 100;
+  const vis = A.changes.filter(c => c.frame === frame).map(c => c.name);
+  $('framebox').innerHTML = `<b>Inspection frame ${frame}</b> of ${P.inspection.length-1}<br>${P.rooms[frame]}, ${P.kinds[frame] === 'pan' ? 'panning' : 'walking'}<br>device pose error: ${fmt(err,1)} cm` + (vis.length ? `<br>best view of: ${vis.join(', ')}` : '');
+}
+$('slider').max = P.inspection.length - 1;
+$('slider').addEventListener('input', e => { frame = +e.target.value; drawPlan(); });
+['cBase','cInsp','cDev','cChg'].forEach(id => $(id).addEventListener('change', drawPlan));
+function setView(v){ view = v; $('vBefore').setAttribute('aria-pressed', v==='before'); $('vAfter').setAttribute('aria-pressed', v==='after'); drawPlan(); }
+$('vBefore').onclick = () => setView('before');
+$('vAfter').onclick = () => setView('after');
+drawPlan();
+
+// ---- anatomy
+const an = A.anatomy;
+$('anatIntro').textContent = `Inspection frame ${an.frame} (${an.room}), the frame with the most changed pixels. A detector receives only the first two images and the poses; the rest is what the harness keeps for scoring.`;
+[[an.rgb, 'Colour', `Inspection lighting (exposure ${fmt(A.lighting.exposure_insp,2)} vs ${fmt(A.lighting.exposure_base,2)} at baseline, ${A.lighting.lamps_insp} lamp on), plus sensor noise.`],
+ [an.depth, 'Depth', `Metric depth with distance-dependent noise; ${fmt(an.dropout*100,1)}% of pixels have no reading (black), including flying pixels removed at edges.`],
+ [an.oid, 'Object ids', 'Which object each pixel shows. Never given to detectors; used to build the masks.'],
+ [an.before, 'Baseline at this pose', 'The unchanged scene rendered from the same pose with baseline lighting: what "should" be there.'],
+ [an.mask, 'Ground-truth change', 'Pixels on changed objects. Detectors are scored against this mask.'],
+].forEach(([src,t,c]) => $('anat').insertAdjacentHTML('beforeend', `<figure><img class="px" src="${src}" alt="${t}"><figcaption><b>${t}.</b> ${c}</figcaption></figure>`));
+
+// ---- changes
+const changeOid = c => {
+  // match a card to an object on the plan by type and name
+  const want = c.name.replace(/ /g,'_');
+  for (const id in diff) {
+    if (diff[id] !== c.type) continue;
+    const o = F[id] || B[id];
+    if (o.name.includes(want) || want.includes(o.name)) return +id;
+  }
+  return null;
+};
+A.changes.forEach((c,i) => {
+  const el = document.createElement('div');
+  el.className = 'chg';
+  el.innerHTML = `<div><span class="tag" style="background:${COL[c.type]}">${c.type}</span><b>${c.name}</b> <span class="muted small">· ${c.room}</span></div>
+    <div class="muted small">${c.detail}. Seen in ${c.frames_visible} frames; shown: frame ${c.frame}.</div>
+    <div class="trip"><div><img class="px" src="${c.before}" alt="before"><span>baseline</span></div><div><img class="px" src="${c.after}" alt="after"><span>inspection</span></div><div><img class="px" src="${c.mask}" alt="mask"><span>ground truth</span></div></div>`;
+  el.onclick = () => {
+    document.querySelectorAll('.chg').forEach(e => e.classList.remove('on'));
+    el.classList.add('on');
+    focus = changeOid(c); frame = c.frame; $('slider').value = frame;
+    setView(c.type === 'removed' ? 'before' : 'after');
+    $('plan').scrollIntoView({behavior:'smooth', block:'center'});
+  };
+  $('changes').appendChild(el);
+});
+
+// ---- ladder
+const LBL = {
+  blur: l => [`Motion blur ${Math.round(l*100)}%`, 'Streak length as a share of image width, along the camera motion.'],
+  dark: l => [`Underexposed ${l} EV`, 'Exposure scaled in linear light, then re-encoded and clipped.'],
+  bright: l => [`Overexposed +${l} EV`, 'Highlights clip to white.'],
+  relight: l => [l === 0 ? 'Relight 0 (inspection lights)' : `Relight ${l} (strong change)`, 'Lighting interpolated away from the inspection setting (log scale on gains).'],
+  depth: l => [`Depth noise ×${l}`, `Noise ×${l} and ${l*5}% dropout. Only methods that use depth see this.`],
+};
+const groups = {blur:'Motion blur', dark:'Exposure', bright:'Exposure', relight:'Lighting change', depth:'Depth noise'};
+let lastG = null;
+const fig = (src, t, c) => `<figure><img class="px" src="${src}" alt="${t}"><figcaption><b>${t}.</b> ${c}</figcaption></figure>`;
+$('ladder').insertAdjacentHTML('beforeend', `<div class="grp">Reference</div>` + fig(A.ladder.clean, 'Clean colour', 'Reference inspection frame.') + fig(A.ladder.clean_depth, 'Clean depth', 'Reference depth for the same frame.'));
+A.ladder.items.forEach(it => {
+  const g = groups[it.name];
+  if (g !== lastG) { $('ladder').insertAdjacentHTML('beforeend', `<div class="grp">${g}</div>`); lastG = g; }
+  const [t, c] = LBL[it.name](it.level);
+  $('ladder').insertAdjacentHTML('beforeend', fig(it.img, t, c));
+});
+
+// ---- partial
+const pa = A.partial;
+$('partialText').textContent = `The inspection walk skips the ${pa.skipped.join(', ')} and only half-pans the ${pa.half.join(', ')}. Changes there were never filmed, so the right answer is "not checked". In the robustness study, when stretches of a walk were removed, our detector reported every unfilmed change as not checked (23 of 23); the other methods reported no change there.`;
+$('partialPlan').innerHTML = planSVG({objects:false, skipped:pa.skipped, half:pa.half, paths:[[pa.path, 'var(--insp)', 6]]});
+</script>
+</body>
+</html>

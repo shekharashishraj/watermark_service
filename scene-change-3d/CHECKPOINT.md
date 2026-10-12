@@ -8,6 +8,8 @@ built. This checkpoint covers the robustness and calibration study built on top 
 
 Findings so far: `docs/robustness/findings.md` (also the top of `ROBUSTNESS.md`).
 Overview page (private): https://claude.ai/artifact/N8soP8ZxWd3ggseDoVjDzC (version 5, interim).
+Harness page (private): https://claude.ai/artifact/JGn31q3qPWjt4HntBstKqv, sources in `docs/harness/`.
+O-SCD predicted failure modes against the A100 and synthetic results: `docs/robustness/oscd_predictions.md`.
 
 ## Done
 

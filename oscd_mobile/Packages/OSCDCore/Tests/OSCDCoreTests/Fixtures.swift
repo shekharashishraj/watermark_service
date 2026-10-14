@@ -45,4 +45,10 @@ enum Fixtures {
         let f = a.floats()
         return stride(from: 0, to: f.count, by: 3).map { SIMD3(f[$0], f[$0 + 1], f[$0 + 2]) }
     }
+
+    /// numpy row-major 4×4 world-to-camera matrix → Pose.
+    static func pose(rowMajor4x4 m: [Float]) -> Pose {
+        let R = simd_float3x3(rows: [SIMD3(m[0], m[1], m[2]), SIMD3(m[4], m[5], m[6]), SIMD3(m[8], m[9], m[10])])
+        return Pose(R: R, t: SIMD3(m[3], m[7], m[11]))
+    }
 }

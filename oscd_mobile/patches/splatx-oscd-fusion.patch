@@ -1,0 +1,785 @@
+From 768614c0fbf860478803aa2ce166a65b4c517227 Mon Sep 17 00:00:00 2001
+From: oscd <oscd@local>
+Date: Wed, 14 Oct 2026 10:17:06 -0700
+Subject: [PATCH] oscd_mobile: O-SCD change fusion (custom-loss backward, torch
+ Adam, ADC)
+
+---
+ Sources/SplatXCore/OscdFusion.cpp             | 319 ++++++++++++++++++
+ Sources/SplatXCore/Trainer.cpp                |  63 ++++
+ .../SplatXCore/include/splatx/OscdFusion.h    | 101 ++++++
+ Sources/SplatXCore/include/splatx/Trainer.h   |  23 ++
+ Sources/SplatXTrainC/OscdFusionC.cpp          | 159 +++++++++
+ Sources/SplatXTrainC/include/oscd_fusion_c.h  |  45 +++
+ 6 files changed, 710 insertions(+)
+ create mode 100644 Sources/SplatXCore/OscdFusion.cpp
+ create mode 100644 Sources/SplatXCore/include/splatx/OscdFusion.h
+ create mode 100644 Sources/SplatXTrainC/OscdFusionC.cpp
+ create mode 100644 Sources/SplatXTrainC/include/oscd_fusion_c.h
+
+diff --git a/Sources/SplatXCore/OscdFusion.cpp b/Sources/SplatXCore/OscdFusion.cpp
+new file mode 100644
+index 0000000..d00e583
+--- /dev/null
++++ b/Sources/SplatXCore/OscdFusion.cpp
+@@ -0,0 +1,319 @@
++// oscd_mobile patch — O-SCD change fusion on splatx. See include/splatx/OscdFusion.h.
++#include "splatx/OscdFusion.h"
++
++#include <algorithm>
++#include <cmath>
++#include <stdexcept>
++
++namespace splatx::oscd {
++
++float ssf_loss_and_grad(const float* render, const float* cue, const uint8_t* valid, int width,
++                        int height, float* v_render, float log_constant) {
++    const int64_t n = static_cast<int64_t>(width) * height;
++    std::fill(v_render, v_render + n * 3, 0.0f);
++    std::vector<float> m(static_cast<size_t>(n), 0.0f);
++    double sum_cm = 0.0, sum_m = 0.0;
++    int64_t nv = 0;
++    for (int64_t p = 0; p < n; p++) {
++        if (!valid[p]) continue;
++        float M = 0.0f;
++        for (int c = 0; c < 3; c++) M += std::min(1.0f, std::max(0.0f, render[p * 3 + c]));
++        M /= 3.0f;
++        const float mp = 1.0f / (1.0f + std::exp(-M));
++        m[p] = mp;
++        sum_cm += static_cast<double>(cue[p]) * (1.0 - mp);
++        sum_m += mp;
++        nv++;
++    }
++    if (nv == 0) return 0.0f;
++    const double mean = sum_m / static_cast<double>(nv);
++    const double loss = sum_cm / static_cast<double>(nv) + std::log(mean * mean + log_constant);
++    const double d_reg = 2.0 * mean / (mean * mean + log_constant);   // d log(mean² + k) / d mean
++    for (int64_t p = 0; p < n; p++) {
++        if (!valid[p]) continue;
++        const double dL_dm = (-static_cast<double>(cue[p]) + d_reg) / static_cast<double>(nv);
++        const float dL_dM = static_cast<float>(dL_dm * m[p] * (1.0f - m[p]));
++        for (int c = 0; c < 3; c++) {
++            const float r = render[p * 3 + c];
++            if (r >= 0.0f && r <= 1.0f) v_render[p * 3 + c] = dL_dM / 3.0f;   // torch.clamp passes [0,1]
++        }
++    }
++    return static_cast<float>(loss);
++}
++
++void torch_adam(float* param, const float* grad, float* exp_avg, float* exp_avg_sq, size_t n,
++                int step, float lr, float beta1, float beta2, float eps) {
++    const float bc1 = 1.0f - std::pow(beta1, static_cast<float>(step));
++    const float bc2_sqrt = std::sqrt(1.0f - std::pow(beta2, static_cast<float>(step)));
++    const float step_size = lr / bc1;
++    for (size_t i = 0; i < n; i++) {
++        exp_avg[i] += (grad[i] - exp_avg[i]) * (1.0f - beta1);              // lerp_, as torch
++        exp_avg_sq[i] = exp_avg_sq[i] * beta2 + (1.0f - beta2) * grad[i] * grad[i];
++        const float denom = std::sqrt(exp_avg_sq[i]) / bc2_sqrt + eps;
++        param[i] -= step_size * exp_avg[i] / denom;
++    }
++}
++
++namespace {
++float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
++float logit(float p) { return std::log(p / (1.0f - p)); }
++
++std::array<float, 3> camera_centre(const TrainingCamera& cam) {
++    const float* v = cam.viewmat;   // row-major [R | t]
++    std::array<float, 3> c{};
++    for (int j = 0; j < 3; j++) c[j] = -(v[0 * 4 + j] * v[3] + v[1 * 4 + j] * v[7] + v[2 * 4 + j] * v[11]);
++    return c;
++}
++
++// gaussian_model.py build_rotation (w-first, normalised)
++void rotation(const float* q, float R[9]) {
++    float r = q[0], x = q[1], y = q[2], z = q[3];
++    const float norm = std::sqrt(r * r + x * x + y * y + z * z);
++    r /= norm; x /= norm; y /= norm; z /= norm;
++    R[0] = 1 - 2 * (y * y + z * z); R[1] = 2 * (x * y - r * z);     R[2] = 2 * (x * z + r * y);
++    R[3] = 2 * (x * y + r * z);     R[4] = 1 - 2 * (x * x + z * z); R[5] = 2 * (y * z - r * x);
++    R[6] = 2 * (x * z - r * y);     R[7] = 2 * (y * z + r * x);     R[8] = 1 - 2 * (x * x + y * y);
++}
++
++template <typename T>
++void compact(std::vector<T>& v, const std::vector<uint8_t>& remove, size_t width) {
++    size_t w = 0;
++    for (size_t i = 0; i < remove.size(); i++) {
++        if (remove[i]) continue;
++        if (w != i) std::copy_n(v.begin() + i * width, width, v.begin() + w * width);
++        w++;
++    }
++    v.resize(w * width);
++}
++} // namespace
++
++ChangeFusion::ChangeFusion(KernelBackend& backend, SplatCloud reference,
++                           std::vector<std::array<float, 3>> reference_centres, FusionConfig cfg)
++    : cfg_(cfg), centres_(std::move(reference_centres)), rng_(cfg.seed) {
++    // load_ply_change (gaussian_model.py:353-395): f_dc = 0, f_rest unused, rendered at SH degree 0.
++    std::fill(reference.sh0.begin(), reference.sh0.end(), 0.0f);
++    reference.shN.clear();
++    reference.sh_degree = 0;
++    TrainConfig tc;
++    tc.resident = false;      // custom-loss backward runs on the host path
++    tc.ssim_weight = 0.0f;
++    tc.lr_means = 0.0f;
++    tc.antialiased = false;
++    tc.opacity_reg = 0.0f;
++    tc.scale_reg = 0.0f;
++    trainer_ = std::make_unique<Trainer>(backend, std::move(reference), tc);
++    const size_t N = static_cast<size_t>(trainer_->splat_count());
++    m_sh0_.assign(N * 3, 0.0f); v_sh0_.assign(N * 3, 0.0f);
++    m_op_.assign(N, 0.0f);      v_op_.assign(N, 0.0f);
++    m_sc_.assign(N * 3, 0.0f);  v_sc_.assign(N * 3, 0.0f);
++    m_q_.assign(N * 4, 0.0f);   v_q_.assign(N * 4, 0.0f);
++    reset_stats();
++}
++
++void ChangeFusion::add_frame(FusionFrame frame) {
++    const size_t px = static_cast<size_t>(frame.cam.width) * frame.cam.height;
++    if (frame.cue.size() != px || frame.valid.size() != px)
++        throw std::invalid_argument("ChangeFusion::add_frame: cue/valid size must be width·height");
++    frames_.push_back(std::move(frame));
++}
++
++float ChangeFusion::extent() const {
++    std::vector<std::array<float, 3>> all = centres_;
++    for (const auto& f : frames_) all.push_back(camera_centre(f.cam));
++    if (all.empty()) return 0.0f;
++    std::array<float, 3> mean{};
++    for (const auto& c : all) for (int j = 0; j < 3; j++) mean[j] += c[j] / static_cast<float>(all.size());
++    float maxd = 0.0f;
++    for (const auto& c : all) {
++        const float dx = c[0] - mean[0], dy = c[1] - mean[1], dz = c[2] - mean[2];
++        maxd = std::max(maxd, std::sqrt(dx * dx + dy * dy + dz * dz));
++    }
++    return 1.1f * maxd;
++}
++
++void ChangeFusion::reset_stats() {
++    const size_t N = static_cast<size_t>(trainer_->splat_count());
++    grad_accum_.assign(N, 0.0f);
++    denom_.assign(N, 0.0f);
++}
++
++float ChangeFusion::optimise_on(size_t frame_index, float log_constant) {
++    const FusionFrame& fr = frames_.at(frame_index);
++    Trainer::CustomGrads g = trainer_->backward_custom(
++        fr.cam, [&](const float* r, int w, int h, float* v) {
++            return ssf_loss_and_grad(r, fr.cue.data(), fr.valid.data(), w, h, v, log_constant);
++        });
++    SplatCloud& c = trainer_->mutable_cloud();
++    adam_steps_++;
++    torch_adam(c.sh0.data(), g.v_sh0.data(), m_sh0_.data(), v_sh0_.data(), c.sh0.size(), adam_steps_, cfg_.lr_sh0);
++    torch_adam(c.opacities.data(), g.v_opacities.data(), m_op_.data(), v_op_.data(), c.opacities.size(), adam_steps_, cfg_.lr_opacity);
++    torch_adam(c.scales.data(), g.v_scales.data(), m_sc_.data(), v_sc_.data(), c.scales.size(), adam_steps_, cfg_.lr_scale);
++    torch_adam(c.quats.data(), g.v_quats.data(), m_q_.data(), v_q_.data(), c.quats.size(), adam_steps_, cfg_.lr_quat);
++    // add_densification_stats (gaussian_model.py:560-562). FastGS's screen-space gradient is taken
++    // w.r.t. NDC (backward.cu: ddelx_dx = 0.5·W); splatx's v_means2d is per pixel.
++    const float hx = 0.5f * static_cast<float>(fr.cam.width), hy = 0.5f * static_cast<float>(fr.cam.height);
++    for (size_t i = 0; i < g.valid.size(); i++) {
++        if (!g.valid[i]) continue;
++        const float gx = g.v_means2d[i * 2] * hx, gy = g.v_means2d[i * 2 + 1] * hy;
++        grad_accum_[i] += std::sqrt(gx * gx + gy * gy);
++        denom_[i] += 1.0f;
++    }
++    total_steps_++;
++    return g.loss;
++}
++
++float ChangeFusion::step_newest_frame() {
++    if (frames_.empty()) throw std::logic_error("ChangeFusion::step_newest_frame: no frames");
++    std::uniform_real_distribution<double> u(0.0, 1.0);
++    float loss = 0.0f;
++    for (int it = 0; it < cfg_.steps_per_frame; it++) {
++        size_t idx = frames_.size() - 1;
++        if (u(rng_) > cfg_.newest_threshold)
++            idx = std::uniform_int_distribution<size_t>(0, frames_.size() - 1)(rng_);
++        loss = optimise_on(idx, 1.0f);
++        if (it == cfg_.densify_step) {
++            std::vector<float> grads(grad_accum_.size());
++            for (size_t i = 0; i < grads.size(); i++)
++                grads[i] = denom_[i] > 0.0f ? grad_accum_[i] / denom_[i] : 0.0f;   // NaN → 0
++            densify(grads, cfg_.online_grad_threshold, extent());
++        }
++    }
++    return loss;
++}
++
++void ChangeFusion::refine() {
++    if (frames_.empty()) return;
++    const float ext = extent();
++    std::uniform_int_distribution<size_t> pick(0, frames_.size() - 1);
++    while (total_steps_ < cfg_.refine_total) {
++        optimise_on(pick(rng_), 1.000000001f);
++        if (total_steps_ % cfg_.densification_interval == 0) {      // densify_and_prune
++            std::vector<float> grads(grad_accum_.size());
++            for (size_t i = 0; i < grads.size(); i++)
++                grads[i] = denom_[i] > 0.0f ? grad_accum_[i] / denom_[i] : 0.0f;
++            densify(grads, cfg_.refine_grad_threshold, ext);
++            prune_opacity(cfg_.refine_min_opacity);
++        }
++        if (total_steps_ % cfg_.opacity_reset_interval == 0) reset_opacity();
++    }
++}
++
++std::vector<float> ChangeFusion::change_map(const TrainingCamera& cam) {
++    const std::vector<float> r = trainer_->render(cam);
++    const size_t n = static_cast<size_t>(cam.width) * cam.height;
++    std::vector<float> out(n);
++    for (size_t p = 0; p < n; p++) {
++        float s = 0.0f;
++        for (int c = 0; c < 3; c++) s += std::min(1.0f, std::max(0.0f, r[p * 3 + c]));
++        out[p] = s / 3.0f;
++    }
++    return out;
++}
++
++void ChangeFusion::append_rows(const std::vector<int64_t>& src, const std::vector<float>* new_means,
++                               const std::vector<float>* new_scales) {
++    if (src.empty()) return;
++    SplatCloud& c = trainer_->mutable_cloud();
++    const size_t k = src.size();
++    std::vector<float> means(k * 3), scales(k * 3), quats(k * 4), op(k), sh0(k * 3);
++    for (size_t j = 0; j < k; j++) {
++        const size_t i = static_cast<size_t>(src[j]);
++        for (int d = 0; d < 3; d++) {
++            means[j * 3 + d] = new_means ? (*new_means)[j * 3 + d] : c.means[i * 3 + d];
++            scales[j * 3 + d] = new_scales ? (*new_scales)[j * 3 + d] : c.scales[i * 3 + d];
++            sh0[j * 3 + d] = c.sh0[i * 3 + d];
++        }
++        for (int d = 0; d < 4; d++) quats[j * 4 + d] = c.quats[i * 4 + d];
++        op[j] = c.opacities[i];
++    }
++    c.means.insert(c.means.end(), means.begin(), means.end());
++    c.scales.insert(c.scales.end(), scales.begin(), scales.end());
++    c.quats.insert(c.quats.end(), quats.begin(), quats.end());
++    c.opacities.insert(c.opacities.end(), op.begin(), op.end());
++    c.sh0.insert(c.sh0.end(), sh0.begin(), sh0.end());
++    c.count += static_cast<int64_t>(k);
++    // cat_tensors_to_optimizer: new rows get zero moments
++    m_sh0_.resize(c.sh0.size(), 0.0f); v_sh0_.resize(c.sh0.size(), 0.0f);
++    m_op_.resize(c.opacities.size(), 0.0f); v_op_.resize(c.opacities.size(), 0.0f);
++    m_sc_.resize(c.scales.size(), 0.0f); v_sc_.resize(c.scales.size(), 0.0f);
++    m_q_.resize(c.quats.size(), 0.0f); v_q_.resize(c.quats.size(), 0.0f);
++}
++
++void ChangeFusion::remove_rows(const std::vector<uint8_t>& remove) {
++    SplatCloud& c = trainer_->mutable_cloud();
++    if (remove.size() != static_cast<size_t>(c.count)) throw std::logic_error("remove_rows: mask size");
++    compact(c.means, remove, 3); compact(c.scales, remove, 3); compact(c.quats, remove, 4);
++    compact(c.opacities, remove, 1); compact(c.sh0, remove, 3);
++    compact(m_sh0_, remove, 3); compact(v_sh0_, remove, 3); compact(m_op_, remove, 1); compact(v_op_, remove, 1);
++    compact(m_sc_, remove, 3); compact(v_sc_, remove, 3); compact(m_q_, remove, 4); compact(v_q_, remove, 4);
++    compact(grad_accum_, remove, 1); compact(denom_, remove, 1);
++    c.count = static_cast<int64_t>(c.opacities.size());
++}
++
++void ChangeFusion::densify(const std::vector<float>& grads, float threshold, float scene_extent) {
++    const float limit = cfg_.percent_dense * scene_extent;
++    auto max_scale = [](const SplatCloud& c, size_t i) {
++        return std::exp(std::max({c.scales[i * 3], c.scales[i * 3 + 1], c.scales[i * 3 + 2]}));
++    };
++    // densify_and_clone (gaussian_model.py:519-531)
++    const int64_t n0 = trainer_->splat_count();
++    {
++        const SplatCloud& c = trainer_->mutable_cloud();
++        std::vector<int64_t> src;
++        for (int64_t i = 0; i < n0; i++)
++            if (grads[i] >= threshold && max_scale(c, i) <= limit) src.push_back(i);
++        append_rows(src, nullptr, nullptr);
++        reset_stats();                                   // densification_postfix
++    }
++    // densify_and_split (gaussian_model.py:497-517), N = 2; clones are padded with zero gradient
++    const SplatCloud& c = trainer_->mutable_cloud();
++    const int64_t n1 = c.count;
++    std::vector<int64_t> selected;
++    for (int64_t i = 0; i < n1; i++) {
++        const float g = i < n0 ? grads[i] : 0.0f;
++        if (g >= threshold && max_scale(c, i) > limit) selected.push_back(i);
++    }
++    if (selected.empty()) return;
++    std::normal_distribution<float> normal(0.0f, 1.0f);
++    std::vector<int64_t> src;
++    std::vector<float> new_means, new_scales;
++    for (int rep = 0; rep < 2; rep++) {                  // .repeat(N, 1): block order
++        for (int64_t i : selected) {
++            src.push_back(i);
++            float R[9];
++            rotation(&c.quats[i * 4], R);
++            float s[3], smp[3];
++            for (int d = 0; d < 3; d++) {
++                s[d] = std::exp(c.scales[i * 3 + d]);
++                smp[d] = normal(rng_) * s[d];
++            }
++            for (int r = 0; r < 3; r++)
++                new_means.push_back(R[r * 3] * smp[0] + R[r * 3 + 1] * smp[1] + R[r * 3 + 2] * smp[2] + c.means[i * 3 + r]);
++            for (int d = 0; d < 3; d++) new_scales.push_back(std::log(s[d] / (0.8f * 2.0f)));
++        }
++    }
++    append_rows(src, &new_means, &new_scales);
++    reset_stats();                                       // densification_postfix
++    std::vector<uint8_t> remove(static_cast<size_t>(trainer_->splat_count()), 0);
++    for (int64_t i : selected) remove[static_cast<size_t>(i)] = 1;   // prune the parents
++    remove_rows(remove);
++}
++
++void ChangeFusion::prune_opacity(float min_opacity) {
++    const SplatCloud& c = trainer_->mutable_cloud();
++    std::vector<uint8_t> remove(static_cast<size_t>(c.count), 0);
++    bool any = false;
++    for (size_t i = 0; i < remove.size(); i++)
++        if (sigmoid(c.opacities[i]) < min_opacity) { remove[i] = 1; any = true; }
++    if (any) remove_rows(remove);
++}
++
++void ChangeFusion::reset_opacity() {
++    SplatCloud& c = trainer_->mutable_cloud();
++    for (float& o : c.opacities) o = logit(std::min(sigmoid(o), 0.01f));
++    // replace_tensor_to_optimizer: zero moments, the step count is kept
++    std::fill(m_op_.begin(), m_op_.end(), 0.0f);
++    std::fill(v_op_.begin(), v_op_.end(), 0.0f);
++}
++
++} // namespace splatx::oscd
+diff --git a/Sources/SplatXCore/Trainer.cpp b/Sources/SplatXCore/Trainer.cpp
+index cb9ebf6..411281d 100644
+--- a/Sources/SplatXCore/Trainer.cpp
++++ b/Sources/SplatXCore/Trainer.cpp
+@@ -1130,6 +1130,69 @@ TrainStepResult Trainer::step(const TrainingCamera& cam, const float* gt_rgb, in
+     return r;
+ }
+ 
++// ===== oscd_mobile patch: custom-loss backward =====
++// The host path of step() (lines above) with the L1/SSIM block replaced by loss_fn and the
++// regularisers, Adam and MCMC removed. Kept line-for-line with step() otherwise.
++Trainer::CustomGrads Trainer::backward_custom(const TrainingCamera& cam, const LossFn& loss_fn) {
++    if (cfg_.resident) throw std::logic_error("Trainer::backward_custom needs TrainConfig.resident = false");
++    if (!loss_fn) throw std::invalid_argument("Trainer::backward_custom: null loss_fn");
++    const int64_t N = cloud_.count;
++    Forward f = forward_pass(cam, static_cast<uint32_t>(cloud_.sh_degree));
++
++    const int64_t hw = static_cast<int64_t>(cam.width) * cam.height;
++    std::vector<float> v_render(static_cast<size_t>(hw) * 3, 0.0f);
++    CustomGrads out;
++    out.loss = loss_fn(f.raster.render_colors.data(), cam.width, cam.height, v_render.data());
++    const std::vector<float> v_render_alphas(static_cast<size_t>(hw), 0.0f);
++
++    RasterizeBwdGradsIn gin;
++    gin.render_alphas = f.raster.render_alphas.data();
++    gin.last_ids = f.raster.last_ids.data();
++    gin.v_render_colors = v_render.data();
++    gin.v_render_alphas = v_render_alphas.data();
++    RasterizeBwdGrads rg = backend_.rasterize_bwd(make_raster_inputs(f, cam, N), gin);
++
++    if (rg.v_colors.size() != f.relu_mask.size())
++        throw std::logic_error("Trainer::backward_custom: v_colors/relu_mask size mismatch");
++    for (size_t i = 0; i < rg.v_colors.size(); i++)
++        if (!f.relu_mask[i]) rg.v_colors[i] = 0.0f;
++    ShInputs sin = make_sh_inputs_impl(f.dirs, f.coeffs, f.valid, f.degrees_to_use, N, f.K_total);
++    sin.compute_v_dirs = true;
++    const ShGrads sg = backend_.sh_bwd(sin, rg.v_colors.data());
++
++    const std::vector<float> v_depths(static_cast<size_t>(N), 0.0f);
++    const ProjectionFusedInputs pin =
++        make_proj_inputs(cloud_, cam, cfg_, f.scales_lin, f.opacs_act, cam.viewmat);
++    ProjectionFusedGradsIn pgin;
++    pgin.radii = f.proj.radii.data();
++    pgin.conics = f.proj.conics.data();
++    pgin.v_means2d = rg.v_means2d.data();
++    pgin.v_depths = v_depths.data();
++    pgin.v_conics = rg.v_conics.data();
++    std::vector<float> v_comp;
++    if (cfg_.antialiased) {
++        v_comp = chain_aa_opacity_grads_inplace(rg.v_opacities, f.opacs_act.data(),
++                                                f.proj.compensations.data());
++        pgin.compensations = f.proj.compensations.data();
++        pgin.v_compensations = v_comp.data();
++    }
++    ProjectionFusedGrads pg = backend_.projection_fused_bwd(pin, pgin);
++
++    chain_scale_grads_inplace(pg.v_scales, f.scales_lin.data());
++    chain_opacity_grads_inplace(rg.v_opacities, f.opacs_act.data());
++
++    out.v_sh0.resize(static_cast<size_t>(N) * 3);
++    for (int64_t i = 0; i < N; i++)
++        for (int c = 0; c < 3; c++) out.v_sh0[i * 3 + c] = sg.v_coeffs[(i * f.K_total) * 3 + c];
++    out.v_quats = std::move(pg.v_quats);
++    out.v_scales = std::move(pg.v_scales);
++    out.v_opacities = std::move(rg.v_opacities);
++    out.v_means2d = std::move(rg.v_means2d);
++    out.valid = f.valid;
++    out.render_colors = std::move(f.raster.render_colors);
++    return out;
++}
++
+ std::vector<float> Trainer::render(const TrainingCamera& cam) {
+     if (resident_ready()) {
+         // Resident forward — the same kernels and activation path as the forward in step() (so a
+diff --git a/Sources/SplatXCore/include/splatx/OscdFusion.h b/Sources/SplatXCore/include/splatx/OscdFusion.h
+new file mode 100644
+index 0000000..23cc53b
+--- /dev/null
++++ b/Sources/SplatXCore/include/splatx/OscdFusion.h
+@@ -0,0 +1,101 @@
++// oscd_mobile patch — O-SCD change fusion (Changes in Real Time, CVPR 2026; code @3abfeaa) on splatx.
++// R_change is a copy of the reference Gaussians with f_dc = 0, rendered at SH degree 0; colour,
++// opacity, scale and rotation are optimised with torch.optim.Adam semantics against O-SCD's
++// self-supervised fusion (SSF) loss while positions stay frozen. Citations are to O-SCD's oscd.py
++// and scene/gaussian_model.py. Single-thread use only (splatx's Trainer contract).
++#pragma once
++#include "splatx/KernelBackend.h"
++#include "splatx/SplatCloud.h"
++#include "splatx/Trainer.h"
++#include "splatx/TrainingInput.h"
++
++#include <array>
++#include <cstdint>
++#include <memory>
++#include <random>
++#include <vector>
++
++namespace splatx::oscd {
++
++// SSF loss (oscd.py:221-226 online, :277-280 refine) over the pixels with valid != 0 (spec D3; O-SCD
++// averages over all pixels): with r clamped to [0,1] (gaussian_renderer:202), M = mean_c r,
++// m = sigmoid(M): loss = mean(C·(1−m)) + log(mean(m)² + log_constant). Writes d loss / d raw render
++// into v_render [H,W,3] (zero where a channel is clamped or the pixel is invalid). Returns the loss.
++float ssf_loss_and_grad(const float* render, const float* cue, const uint8_t* valid, int width,
++                        int height, float* v_render, float log_constant = 1.0f);
++
++// One torch.optim.Adam step (bias-corrected; eps added after the bias-corrected sqrt), in place.
++// `step` is the 1-based step count after this update.
++void torch_adam(float* param, const float* grad, float* exp_avg, float* exp_avg_sq, size_t n,
++                int step, float lr, float beta1 = 0.9f, float beta2 = 0.999f, float eps = 1e-15f);
++
++struct FusionConfig {
++    float lr_sh0 = 0.0025f;        // feature_lr
++    float lr_opacity = 0.025f;     // opacity_lr
++    float lr_scale = 0.005f;       // scaling_lr
++    float lr_quat = 0.001f;        // rotation_lr   (xyz: spatial_lr_scale = 0 → frozen)
++    int steps_per_frame = 16;      // oscd.py:207
++    float newest_threshold = 0.33f; // oscd.py:209: rand() > 0.33 → uniform over seen frames, else newest
++    int densify_step = 4;          // oscd.py:245 (iteration index within the frame)
++    float online_grad_threshold = 1e-3f;   // densify_grad_threshold (2e-4) × 5
++    float percent_dense = 0.01f;
++    int refine_total = 3000;       // --refine: up to 3000 total steps, online steps included
++    int densification_interval = 100;
++    float refine_grad_threshold = 2e-4f;
++    float refine_min_opacity = 0.4f;
++    int opacity_reset_interval = 2000;     // oscd.py:304
++    uint32_t seed = 0;
++};
++
++struct FusionFrame {
++    TrainingCamera cam;                    // world→camera viewmat (row-major) + pinhole K
++    std::vector<float> cue;                // [H·W] O-SCD candidate map C in [0,2]
++    std::vector<uint8_t> valid;            // [H·W] D3 validity
++};
++
++class ChangeFusion {
++public:
++    // reference: the reference cloud (any SH degree); reference_centres: reference camera centres
++    // (world), which enter O-SCD's scene extent (oscd.py:248-250) together with each added frame's.
++    ChangeFusion(KernelBackend& backend, SplatCloud reference,
++                 std::vector<std::array<float, 3>> reference_centres, FusionConfig cfg = {});
++
++    void add_frame(FusionFrame frame);
++    // O-SCD's per-frame inner loop (oscd.py:207-255) for the newest frame. Returns the last loss.
++    float step_newest_frame();
++    // O-SCD --refine (oscd.py:266-305): continue to cfg.refine_total total steps.
++    void refine();
++    // Channel mean of the clamped render at `cam` ([H·W]); O-SCD's mask is value > 0.5 (oscd.py:258-263).
++    std::vector<float> change_map(const TrainingCamera& cam);
++
++    int64_t count() const { return trainer_->splat_count(); }
++    int total_steps() const { return total_steps_; }
++    size_t frame_count() const { return frames_.size(); }
++    float extent() const;
++    const SplatCloud& cloud() { return trainer_->cloud(); }
++
++    // O-SCD gaussian_model.py, exposed for tests.
++    void densify(const std::vector<float>& grads, float threshold, float extent); // clone, then split
++    void prune_opacity(float min_opacity);
++    void reset_opacity();
++
++private:
++    float optimise_on(size_t frame_index, float log_constant);
++    void append_rows(const std::vector<int64_t>& src, const std::vector<float>* new_means,
++                     const std::vector<float>* new_scales);
++    void remove_rows(const std::vector<uint8_t>& remove);
++    void reset_stats();
++
++    std::unique_ptr<Trainer> trainer_;
++    FusionConfig cfg_;
++    std::vector<FusionFrame> frames_;
++    std::vector<std::array<float, 3>> centres_;
++    // Adam moments per parameter group (torch keeps one step count per tensor; all groups step together)
++    std::vector<float> m_sh0_, v_sh0_, m_op_, v_op_, m_sc_, v_sc_, m_q_, v_q_;
++    int adam_steps_ = 0;
++    std::vector<float> grad_accum_, denom_;   // xyz_gradient_accum, denom
++    int total_steps_ = 0;
++    std::mt19937 rng_;
++};
++
++} // namespace splatx::oscd
+diff --git a/Sources/SplatXCore/include/splatx/Trainer.h b/Sources/SplatXCore/include/splatx/Trainer.h
+index 97e12e4..fa39673 100644
+--- a/Sources/SplatXCore/include/splatx/Trainer.h
++++ b/Sources/SplatXCore/include/splatx/Trainer.h
+@@ -4,6 +4,7 @@
+ // derived from their code. The training recipe values (LR and schedules) follow gsplat
+ // examples/simple_trainer.py — derivation notice in docs/provenance.md.)
+ #pragma once
++#include <functional>
+ #include "splatx/AdamState.h"
+ #include "splatx/Checkpoint.h"
+ #include "splatx/KernelBackend.h"
+@@ -403,6 +404,28 @@ public:
+         sync_host_from_device();
+         return cloud_;
+     }
++    // ===== oscd_mobile patch: custom-loss backward (O-SCD change fusion) =====
++    // Runs the host-path forward + backward with a caller-supplied loss instead of L1/SSIM and
++    // returns the gradients in the internal parameterisation **without** an optimizer step (the
++    // caller applies its own optimizer). Requires TrainConfig.resident = false.
++    //   loss_fn(render [H,W,3] raw raster output, width, height, v_render out [H,W,3]) -> loss
++    struct CustomGrads {
++        float loss = 0.0f;
++        std::vector<float> v_quats;       // [N,4]  raw (unnormalised) quaternion
++        std::vector<float> v_scales;      // [N,3]  log scale
++        std::vector<float> v_opacities;   // [N]    logit
++        std::vector<float> v_sh0;         // [N,3]
++        std::vector<float> v_means2d;     // [N,2]  d loss / d projected position, pixels
++        std::vector<uint8_t> valid;       // [N]    radii > 0
++        std::vector<float> render_colors; // [H,W,3]
++    };
++    using LossFn = std::function<float(const float* render, int width, int height, float* v_render)>;
++    CustomGrads backward_custom(const TrainingCamera& cam, const LossFn& loss_fn);
++    // Mutable parameter access for host-side topology edits (clone/split/prune). Syncs first.
++    SplatCloud& mutable_cloud() {
++        sync_host_for_mutation();
++        return cloud_;
++    }
+     // Lightweight observation for callers that only need the splat count (no download — count is
+     // host-owned)
+     int64_t splat_count() const { return cloud_.count; }
+diff --git a/Sources/SplatXTrainC/OscdFusionC.cpp b/Sources/SplatXTrainC/OscdFusionC.cpp
+new file mode 100644
+index 0000000..e852b3f
+--- /dev/null
++++ b/Sources/SplatXTrainC/OscdFusionC.cpp
+@@ -0,0 +1,159 @@
++// oscd_mobile patch — C API for O-SCD change fusion. See include/oscd_fusion_c.h.
++#include "oscd_fusion_c.h"
++
++#include "splatx/MetalBackend.h"
++#include "splatx/OscdFusion.h"
++#include "splatx/PlyIO.h"
++
++#include <cmath>
++#include <cstring>
++#include <memory>
++#include <stdexcept>
++#include <string>
++
++struct OscdFusion {
++    std::unique_ptr<splatx::KernelBackend> backend;   // declared first: destroyed after fusion
++    std::unique_ptr<splatx::oscd::ChangeFusion> fusion;
++};
++
++namespace {
++void set_err(char* buf, int32_t len, const char* msg) {
++    if (!buf || len <= 0) return;
++    std::strncpy(buf, msg, static_cast<size_t>(len) - 1);
++    buf[len - 1] = '\0';
++}
++
++splatx::TrainingCamera camera(const float* viewmat, float fx, float fy, float cx, float cy,
++                              int32_t width, int32_t height) {
++    if (!viewmat || width < 1 || height < 1 || !(fx > 0) || !(fy > 0))
++        throw std::invalid_argument("invalid camera");
++    splatx::TrainingCamera cam;
++    std::memcpy(cam.viewmat, viewmat, sizeof(cam.viewmat));
++    const float K[9] = {fx, 0, cx, 0, fy, cy, 0, 0, 1};
++    std::memcpy(cam.K, K, sizeof(K));
++    cam.width = width;
++    cam.height = height;
++    return cam;
++}
++
++template <typename Fn>
++int32_t guarded(char* err, int32_t len, Fn&& fn) {
++    try {
++        fn();
++        return 0;
++    } catch (const std::exception& e) {
++        set_err(err, len, e.what());
++        return -2;
++    } catch (...) {
++        set_err(err, len, "unknown error");
++        return -2;
++    }
++}
++} // namespace
++
++extern "C" float oscd_ssf_loss_and_grad(const float* render, const float* cue, const uint8_t* valid,
++                                        int32_t width, int32_t height, float* v_render) {
++    return splatx::oscd::ssf_loss_and_grad(render, cue, valid, width, height, v_render);
++}
++
++extern "C" void oscd_torch_adam(float* param, const float* grad, float* exp_avg, float* exp_avg_sq,
++                                int64_t n, int32_t step, float lr) {
++    splatx::oscd::torch_adam(param, grad, exp_avg, exp_avg_sq, static_cast<size_t>(n), step, lr);
++}
++
++extern "C" OscdFusion* oscd_fusion_open(const char* ply_path, const char* kernel_src_dir,
++                                        const float* reference_centres, int32_t n_centres,
++                                        uint32_t seed, char* err, int32_t err_len) {
++    try {
++        if (!ply_path) throw std::invalid_argument("ply_path must be given");
++        splatx::SplatCloud cloud = splatx::read_inria_ply(ply_path);
++        std::vector<std::array<float, 3>> centres;
++        for (int32_t i = 0; i < n_centres; i++)
++            centres.push_back({reference_centres[i * 3], reference_centres[i * 3 + 1], reference_centres[i * 3 + 2]});
++        splatx::MetalBackendDesc desc;
++        desc.search_exe_dir = true;
++        desc.kernel_src_dir = kernel_src_dir ? std::string(kernel_src_dir) : KERNEL_SRC_DIR;
++        auto f = std::make_unique<OscdFusion>();
++        f->backend = splatx::make_metal_backend(nullptr, desc);
++        splatx::oscd::FusionConfig cfg;
++        cfg.seed = seed;
++        f->fusion = std::make_unique<splatx::oscd::ChangeFusion>(*f->backend, std::move(cloud), std::move(centres), cfg);
++        return f.release();
++    } catch (const std::exception& e) {
++        set_err(err, err_len, e.what());
++        return nullptr;
++    } catch (...) {
++        set_err(err, err_len, "unknown error");
++        return nullptr;
++    }
++}
++
++extern "C" int32_t oscd_fusion_add_frame(OscdFusion* f, const float* viewmat, float fx, float fy,
++                                         float cx, float cy, int32_t width, int32_t height,
++                                         const float* cue, const uint8_t* valid, char* err, int32_t err_len) {
++    if (!f || !cue || !valid) return -1;
++    return guarded(err, err_len, [&] {
++        splatx::oscd::FusionFrame fr;
++        fr.cam = camera(viewmat, fx, fy, cx, cy, width, height);
++        const size_t n = static_cast<size_t>(width) * height;
++        fr.cue.assign(cue, cue + n);
++        fr.valid.assign(valid, valid + n);
++        f->fusion->add_frame(std::move(fr));
++    });
++}
++
++extern "C" int32_t oscd_fusion_step_frame(OscdFusion* f, float* out_loss, char* err, int32_t err_len) {
++    if (!f) return -1;
++    return guarded(err, err_len, [&] {
++        const float loss = f->fusion->step_newest_frame();
++        if (out_loss) *out_loss = loss;
++    });
++}
++
++extern "C" int32_t oscd_fusion_refine(OscdFusion* f, char* err, int32_t err_len) {
++    if (!f) return -1;
++    return guarded(err, err_len, [&] { f->fusion->refine(); });
++}
++
++extern "C" int32_t oscd_fusion_change_map(OscdFusion* f, const float* viewmat, float fx, float fy,
++                                          float cx, float cy, int32_t width, int32_t height,
++                                          float* out, char* err, int32_t err_len) {
++    if (!f || !out) return -1;
++    return guarded(err, err_len, [&] {
++        const std::vector<float> m = f->fusion->change_map(camera(viewmat, fx, fy, cx, cy, width, height));
++        std::memcpy(out, m.data(), m.size() * sizeof(float));
++    });
++}
++
++extern "C" int64_t oscd_fusion_count(OscdFusion* f) { return f ? f->fusion->count() : -1; }
++extern "C" int32_t oscd_fusion_total_steps(OscdFusion* f) { return f ? f->fusion->total_steps() : -1; }
++
++extern "C" int32_t oscd_fusion_debug_densify(OscdFusion* f, const float* grads, int64_t n, float threshold,
++                                             float extent, char* err, int32_t err_len) {
++    if (!f || !grads) return -1;
++    return guarded(err, err_len, [&] {
++        if (n != f->fusion->count()) throw std::invalid_argument("grads must have one value per Gaussian");
++        f->fusion->densify(std::vector<float>(grads, grads + n), threshold, extent);
++    });
++}
++
++extern "C" int32_t oscd_fusion_debug_prune(OscdFusion* f, float min_opacity, char* err, int32_t err_len) {
++    if (!f) return -1;
++    return guarded(err, err_len, [&] { f->fusion->prune_opacity(min_opacity); });
++}
++
++extern "C" int32_t oscd_fusion_debug_reset_opacity(OscdFusion* f, char* err, int32_t err_len) {
++    if (!f) return -1;
++    return guarded(err, err_len, [&] { f->fusion->reset_opacity(); });
++}
++
++extern "C" int64_t oscd_fusion_debug_params(OscdFusion* f, float* log_scales, float* opacities, int64_t capacity) {
++    if (!f) return -1;
++    const splatx::SplatCloud& c = f->fusion->cloud();
++    if (capacity < c.count) return -1;
++    std::memcpy(log_scales, c.scales.data(), static_cast<size_t>(c.count) * 3 * sizeof(float));
++    for (int64_t i = 0; i < c.count; i++) opacities[i] = 1.0f / (1.0f + std::exp(-c.opacities[i]));
++    return c.count;
++}
++
++extern "C" void oscd_fusion_close(OscdFusion* f) { delete f; }
+diff --git a/Sources/SplatXTrainC/include/oscd_fusion_c.h b/Sources/SplatXTrainC/include/oscd_fusion_c.h
+new file mode 100644
+index 0000000..75525ae
+--- /dev/null
++++ b/Sources/SplatXTrainC/include/oscd_fusion_c.h
+@@ -0,0 +1,45 @@
++// oscd_mobile patch — C API for O-SCD change fusion (splatx/OscdFusion.h). All functions return 0 on
++// success and a negative value on failure with a message in err (NUL-terminated). Single-thread use.
++#pragma once
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct OscdFusion OscdFusion;
++
++// Pure helpers (tests).
++float oscd_ssf_loss_and_grad(const float* render, const float* cue, const uint8_t* valid,
++                             int32_t width, int32_t height, float* v_render);
++void oscd_torch_adam(float* param, const float* grad, float* exp_avg, float* exp_avg_sq, int64_t n,
++                     int32_t step, float lr);
++
++// reference_centres: n_centres × 3 floats (world camera centres of the reference scan).
++// kernel_src_dir: splatx Sources/SplatXKernelSrc (compiled on the device); NULL uses the build path.
++OscdFusion* oscd_fusion_open(const char* ply_path, const char* kernel_src_dir,
++                             const float* reference_centres, int32_t n_centres, uint32_t seed,
++                             char* err, int32_t err_len);
++// viewmat: world→camera 4×4 row-major (OpenCV axes); cue/valid: width·height.
++int32_t oscd_fusion_add_frame(OscdFusion* f, const float* viewmat, float fx, float fy, float cx,
++                              float cy, int32_t width, int32_t height, const float* cue,
++                              const uint8_t* valid, char* err, int32_t err_len);
++int32_t oscd_fusion_step_frame(OscdFusion* f, float* out_loss, char* err, int32_t err_len);
++int32_t oscd_fusion_refine(OscdFusion* f, char* err, int32_t err_len);
++// out: width·height channel-mean change values; O-SCD's mask is value > 0.5.
++int32_t oscd_fusion_change_map(OscdFusion* f, const float* viewmat, float fx, float fy, float cx,
++                               float cy, int32_t width, int32_t height, float* out, char* err,
++                               int32_t err_len);
++int64_t oscd_fusion_count(OscdFusion* f);
++int32_t oscd_fusion_total_steps(OscdFusion* f);
++// Test hooks.
++int32_t oscd_fusion_debug_densify(OscdFusion* f, const float* grads, int64_t n, float threshold,
++                                  float extent, char* err, int32_t err_len);
++int32_t oscd_fusion_debug_prune(OscdFusion* f, float min_opacity, char* err, int32_t err_len);
++int32_t oscd_fusion_debug_reset_opacity(OscdFusion* f, char* err, int32_t err_len);
++// Copies log-scales (count·3) and activated opacities (count); returns count or -1 if capacity < count.
++int64_t oscd_fusion_debug_params(OscdFusion* f, float* log_scales, float* opacities, int64_t capacity);
++void oscd_fusion_close(OscdFusion* f);
++
++#ifdef __cplusplus
++}
++#endif
+-- 
+2.54.0 (Apple Git-157)
+

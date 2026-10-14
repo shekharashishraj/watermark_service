@@ -1,6 +1,7 @@
 import CoreML
 import Foundation
 import OSCDCore
+import OSCDFusion
 import simd
 
 /// One camera frame handed from ARKit to the preview pipeline.
@@ -38,6 +39,8 @@ final class PreviewWorker {
     private var ready = false
     private let wake = DispatchSemaphore(value: 0)
     private var lastFinish: UInt64 = 0
+    private var refineRequested = false
+    private var refined = false
 
     /// True when the pipeline is set up and would take a new frame now.
     var wantsFrame: Bool {
@@ -55,6 +58,12 @@ final class PreviewWorker {
 
     func submit(_ frame: LiveFrame) {
         lock.lock(); pending = frame; lock.unlock()
+        wake.signal()
+    }
+
+    /// O-SCD --refine on the frames fused so far (runs on the worker thread between frames).
+    func requestRefine() {
+        lock.lock(); refineRequested = true; lock.unlock()
         wake.signal()
     }
 
@@ -94,6 +103,9 @@ final class PreviewWorker {
             let estimator = PoseEstimator(anchors: anchors)
             status("Opening the reference model (compiling splatx kernels on the phone)…")
             let renderer = try SplatRenderer(plyPath: plyURL.path, kernelSourceDir: kernelURL.path)
+            status("Opening the O-SCD change model…")
+            let fusion = try ChangeFusion(plyPath: plyURL.path, kernelSourceDir: kernelURL.path,
+                                          referenceCentres: views.map { $0.pose.centre })
             status(String(format: "Ready: %d anchors from %d keyframes. Point the phone at the table.", anchors.anchorCount, views.count))
             lock.lock(); ready = true; lock.unlock()
 
@@ -101,11 +113,22 @@ final class PreviewWorker {
                 wake.wait()
                 lock.lock()
                 if stopRequested { lock.unlock(); break }
+                if refineRequested {
+                    refineRequested = false
+                    lock.unlock()
+                    status("Refining the change model (O-SCD --refine)…")
+                    let t0 = DispatchTime.now().uptimeNanoseconds
+                    try fusion.refine()
+                    refined = true
+                    status(String(format: "Refined in %.0f s: %d steps, %d Gaussians. Keep pointing at the table.",
+                                  ms(t0, DispatchTime.now().uptimeNanoseconds) / 1000, fusion.totalSteps, fusion.count))
+                    continue
+                }
                 guard let frame = pending else { lock.unlock(); continue }
                 pending = nil; processing = true
                 lock.unlock()
                 let result = process(frame, xfeat: xfeat, sam: sam, estimator: estimator, renderer: renderer,
-                                     referenceK: anchors.intrinsics, roi: roi)
+                                     fusion: fusion, referenceK: anchors.intrinsics, roi: roi)
                 onResult?(result)
                 lock.lock(); processing = false; lock.unlock()
             }
@@ -118,7 +141,7 @@ final class PreviewWorker {
     private func ms(_ a: UInt64, _ b: UInt64) -> Double { Double(b - a) / 1e6 }
 
     private func process(_ f: LiveFrame, xfeat: XFeatModel, sam: SAM2Encoder, estimator: PoseEstimator,
-                         renderer: SplatRenderer, referenceK: Intrinsics, roi: AABB) -> PreviewResult {
+                         renderer: SplatRenderer, fusion: ChangeFusion, referenceK: Intrinsics, roi: AABB) -> PreviewResult {
         let W = f.intrinsics.width, H = f.intrinsics.height, n = W * H
         let now = { DispatchTime.now().uptimeNanoseconds }
         let t0 = now()
@@ -141,11 +164,19 @@ final class PreviewWorker {
             let t3 = now()
             let valid = PreviewValidity.mask(depth: f.depth, confidence: f.confidence, depthWidth: f.depthWidth,
                                              depthHeight: f.depthHeight, intrinsics: f.intrinsics, pose: pose, roi: roi, render: ren)
-            let emb = try sam.encode(render: ren, live: live)
-            let t4 = now()
-            let cues = CuesA.compute(live: live, render: ren, embRender: emb.render, embLive: emb.live, valid: valid)
-            let changed = cues.combined.map { $0 > Self.changeThreshold }
-            let t5 = now()
+            // After refine, O-SCD's model is final: show it at new poses without adding frames.
+            var t4 = now(), t5 = t4
+            if !refined {
+                let emb = try sam.encode(render: ren, live: live)
+                t4 = now()
+                let cues = CuesA.compute(live: live, render: ren, embRender: emb.render, embLive: emb.live, valid: valid)
+                try fusion.addFrame(pose: pose, intrinsics: referenceK, cue: cues.combined, valid: valid)
+                try fusion.stepFrame()
+                t5 = now()
+            }
+            // O-SCD's mask: the change model rendered at this pose, value > 0.5 (oscd.py:258-263).
+            let changed = try fusion.changeMap(pose: pose, intrinsics: referenceK).map { $0 > 0.5 }
+            let t6 = now()
             let judged = valid.filter { $0 }.count
             let flagged = zip(changed, valid).filter { $0 && $1 }.count
             var renderRGBA = [UInt8](repeating: 255, count: n * 4)
@@ -153,9 +184,10 @@ final class PreviewWorker {
             return PreviewResult(
                 overlayRGBA: PreviewComposite.overlay(rgb8: f.rgb, changed: changed, valid: valid), renderRGBA: renderRGBA,
                 width: W, height: H,
-                line: String(format: "pose ✓ %d pts | changed %.0f%% of %.0f%% judged | xfeat %.0f · pose %.0f · render %.0f · sam2 %.0f · cue %.0f ms | %.1f Hz",
+                line: String(format: "pose ✓ %d pts | changed %.0f%% of %.0f%% judged | %@ %d frames, %d Gaussians | xfeat %.0f · pose %.0f · render %.0f · sam2 %.0f · fusion %.0f · mask %.0f ms | %.2f Hz",
                              est.nBAInlierComponents / 2, 100 * Double(flagged) / Double(max(judged, 1)), 100 * Double(judged) / Double(n),
-                             ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), rate))
+                             refined ? "refined," : "fused", fusion.totalSteps / 16, fusion.count,
+                             ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t5, t6), rate))
         } catch {
             return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H, line: "frame failed: \(error.localizedDescription)")
         }

@@ -6,6 +6,8 @@ options:
 packages:
   OSCDCore:
     path: ../Packages/OSCDCore
+  OSCDFusion:
+    path: ../Packages/OSCDFusion
   SplatX:
     path: ../third_party/splatx-metal     # git clone https://github.com/PoSTMEDIA-AI/splatx-metal (see README)
 targets:
@@ -25,6 +27,7 @@ targets:
       - package: OSCDCore
       - package: SplatX
         product: SplatXTrainC
+      - package: OSCDFusion
     info:
       path: Sources/Info.plist
       properties:

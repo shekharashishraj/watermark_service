@@ -35,3 +35,20 @@ copy the weights the checkout already has into torch's cache:
     cd SpikeApp && xcodegen generate && open OSCDSpike.xcodeproj
 Capture tab: tap the table, Record, sweep, Stop → Documents/sessions/<date>/ (Files app).
 Benchmark tab: times each stage on the device → Documents/benchmarks/bench_<date>.csv.
+
+## splatx-metal (reference rendering + O-SCD fusion)
+The app renders the reference splat and runs O-SCD's change fusion with a patched splatx-metal:
+
+    git clone https://github.com/PoSTMEDIA-AI/splatx-metal third_party/splatx-metal
+    git -C third_party/splatx-metal checkout 9ae5f66
+    git -C third_party/splatx-metal am ../../patches/splatx-oscd-fusion.patch
+
+The patch adds `Trainer::backward_custom` (custom-loss backward on the host path) and
+`splatx::oscd::ChangeFusion` (R_change, SSF loss, torch-style Adam, O-SCD densification, refine) with a
+C API (`oscd_fusion_c.h`). `Packages/OSCDFusion` wraps it for Swift; its tests run on the Mac:
+
+    cd Packages/OSCDFusion && swift test --disable-swift-testing --scratch-path ~/Library/Caches/oscd-mobile/OSCDFusion-build
+
+splatx kernels are compiled on the phone at first use (Xcode 27's offline metallib format 2.9 does not
+load on iOS 26). The Preview tab needs `Documents/preview/reference.ply` and `Documents/preview/before/`
+(a recorded before-scan) in the app container.

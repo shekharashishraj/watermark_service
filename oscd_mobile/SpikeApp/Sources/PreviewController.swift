@@ -59,6 +59,8 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
         w.start(assets: Self.assets)
     }
 
+    func refine() { worker?.requestRefine() }
+
     private func stopPipeline() {
         worker?.stop()
         worker = nil

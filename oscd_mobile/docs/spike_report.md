@@ -12,7 +12,7 @@ Fill those in from `Documents/benchmarks/bench_<date>.csv` and Task 17 Steps 3�
 | XFeat per frame | ≤ 15 | 6.2 (1,020 kpts) | yes |
 | Retrieval vs 80 keyframes | ≤ 60 | 21.0 at 1,020 kpts/image (cost grows ~n²: a textured scene near 6,144 kpts would be far slower) | yes, at this keypoint count |
 | P4P-RANSAC + mini-BA | ≤ 20 | 36.6 + 7.6 = 44.2 | no |
-| SAM2 encoder (pair) | ≤ 240 | 469.8 | no |
+| SAM2 encoder (pair) | ≤ 240 | 469.8 as one batch of 2; **268.5** as two batch-1 calls (136.3 per image, bench `18-22-37Z`) | no, but only one image is on the critical path in the live preview (below) |
 | Pixel cue (SSIM) | n/a | 50.1 | – |
 | XFeat on all keyframes + anchor build | ≤ 30 s total | 0.37 s + 1.09 s (52 keyframes) | yes |
 
@@ -86,10 +86,10 @@ Reference: the "before" scan `15-45-15Z` exported with `tools/session_to_colmap.
 | Mask quality (see `engine_comparison_masks.png`) | clean: moved ball and sunglasses at old and new positions | same objects plus speckle across the sheet from a noisier reference |
 | 3k iterations at 480×360 on the iPhone (s) | pending human step: needs the engine's iOS app | pending human step |
 | iPhone peak memory (MB) | pending human step | pending human step |
-| 1 Custom loss hook (file:line) | pending source read | pending source read |
-| 2 Per-parameter LR incl. xyz = 0 | pending | pending |
+| 1 Custom loss hook (file:line) | added by our patch: `Trainer::backward_custom` (`patches/splatx-oscd-fusion.patch`) | pending source read |
+| 2 Per-parameter LR incl. xyz = 0 | yes, via the patch's `torch_adam` (xyz frozen) | pending |
 | 3 Expected-depth render | pending | pending |
-| 4 External densify/prune/reset | pending | pending |
+| 4 External densify/prune/reset | yes, via the patch (`OscdFusion.cpp`: clone/split, prune, opacity reset) | pending |
 | 5 Rasterizer constants match O-SCD | pending | pending |
 | 6 SH degree 0 | trained at SH 3 by default | trained at SH 3 by default |
 | 7 Init from our points | yes (COLMAP points3D from LiDAR) | yes (COLMAP points3D from LiDAR) |
@@ -97,6 +97,21 @@ Reference: the "before" scan `15-45-15Z` exported with `tools/session_to_colmap.
 ![Engine comparison](engine_comparison_masks.png)
 
 Provisional pick: **splatx-metal**. Its reference is clearly better at equal iterations, and that is what the change cue depends on. msplat is 3× faster, so it remains the fallback if splatx-metal misses the ≤ 180 s on-phone budget. Confirm with the iPhone training time and the capability checklist (items 1–5) before Phase 2.
+
+## Live preview on the iPhone (Method A, Preview tab)
+Setup: the reference is the splatx model trained on the Mac from the before-scan `15-45-15Z` (`Documents/preview/reference.ply`, 95,360 Gaussians). The before-scan's keyframes are on the phone too (`Documents/preview/before/`). Per frame the phone runs:
+XFeat → O-SCD pose (77,525 anchors, D11 depths) → splatx render at that pose → validity (D3) → SAM2 + pixel cue → O-SCD online fusion (`ChangeFusion.addFrame` + 16 steps) → change model rendered at the pose, value > 0.5. Kernels are compiled on the phone from source because iOS 26 rejects Xcode 27's metallib (format 2.9). The log is at `Documents/preview/preview-log.txt`.
+
+| Run | Accepted / total frames | Frame time when tracking (median ms) | Notes |
+|---|---|---|---|
+| Per-frame cue, no fusion | – | – | masks show up but flicker frame to frame |
+| Fusion + Refine button | – | – | refine on the phone takes ≈ 55 s and prunes to a few hundred change Gaussians (521 on the Mac). At viewpoints that were not fused these smear into red streaks, so **Refine was dropped from the live demo** (`1efeb14a`) |
+| Online fusion only | 42 / 71 | ≈ 1,450–1,650: fusion 640–1,070, SAM2 420–690, pose 190–330 | changed share steady at 12–14 % of the judged area over the last 18 frames, so the mask no longer flickers |
+| + SAM2 batch 1, live image encoded during pose (`e1a332a3`) | 41 / 197 | **1,209** (best 884): fusion 676, SAM2 191 (live 221 alongside pose), pose 285 | rejections came in runs of 50+ frames at views with ≈ 136 correspondences, i.e. the camera was outside the before-scan's coverage |
+
+- SAM2 batch 1 gives the same embeddings as O-SCD's [render, live] batch: r = 1.00000, max |d| = 0.006 against the batch-2 model. FP16 input/output made no difference. Moving the 1024² resize into the model changed the mapping (difference-map r = 0.81), so the resize stays in Swift.
+- Fusion is now the largest stage: 16 steps on all 95k reference Gaussians, through splatx's host path (`resident = false`).
+- Pose is only reliable near the scanned distance (≈ 25–35 cm) and on the patterned sheet.
 
 ## Verified on the Mac (no device or Sol needed)
 | Component | Reference it was checked against | Result |
@@ -117,4 +132,10 @@ Still to verify against the real O-SCD on Sol: everything above, at fp16 CUDA on
 - Reference build: pending (depends on the engine's on-device timing).
 - D9 (fewer keypoints or lower resolution): pending device timings.
 - D11 (disambiguation depths): **(0.1, 1.0) m adopted**. At 30 cm from the table, keyframes a few cm apart produce too little parallax for O-SCD's 1 m / 10 m gate, so the real-scan yield was 0.011–0.027.
+- Live demo: **online O-SCD fusion, no Refine** (Refine stays in `OSCDFusion` for an offline final-result view).
+- SAM2: **batch-1 model** (`SAM2_1Tiny_1x1024`), pinned to the Neural Engine. The live image is encoded while the pose is estimated.
+- Next speed-ups, biggest first:
+  - restrict fusion to the table region, ≈ 680 → 100–200 ms (would be deviation D13);
+  - keep the fusion state on the GPU;
+  - estimate the next frame's pose while the current frame fuses.
 - Go / no-go for Phase 2: pending the human steps above.

@@ -25,6 +25,7 @@ Finder metadata onto build products. Build outside it:
     python3 -m venv tools/.venv && tools/.venv/bin/pip install -r tools/requirements-mac.txt
     git clone https://github.com/verlab/accelerated_features third_party/accelerated_features
     tools/.venv/bin/python tools/convert_xfeat_coreml.py     # → Models/XFeat_480x352.mlpackage
+    tools/.venv/bin/python tools/convert_sam2_coreml.py      # → Models/SAM2_1Tiny_2x1024.mlpackage
 
 If torch.hub fails with CERTIFICATE_VERIFY_FAILED (python.org Python without its certificates),
 copy the weights the checkout already has into torch's cache:

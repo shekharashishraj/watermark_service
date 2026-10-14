@@ -19,7 +19,7 @@ targets:
     info:
       path: Sources/Info.plist
       properties:
-        CFBundleDisplayName: OSCD Spike
+        CFBundleDisplayName: 3D Changes
         NSCameraUsageDescription: Scans the tabletop for change detection.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -29,7 +29,8 @@ targets:
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
-        PRODUCT_BUNDLE_IDENTIFIER: edu.asu.oscd.spike
+        PRODUCT_BUNDLE_IDENTIFIER: com.veripheye.changes3d
+        DEVELOPMENT_TEAM: 7FJWHJ5QJJ
         SWIFT_VERSION: "5.0"
 schemes:
   OSCDSpike:

@@ -32,15 +32,10 @@ struct PreviewView: View {
                     .multilineTextAlignment(.center)
                     .padding(10)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                HStack(spacing: 16) {
-                    Button(controller.running ? "Stop" : "Start") { controller.toggle() }
-                        .buttonStyle(.borderedProminent)
-                        .tint(controller.running ? .red : .accentColor)
-                    if controller.running {
-                        Button("Refine") { controller.refine() }.buttonStyle(.bordered)
-                    }
-                }
-                .padding(.bottom, 24)
+                Button(controller.running ? "Stop" : "Start") { controller.toggle() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(controller.running ? .red : .accentColor)
+                    .padding(.bottom, 24)
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)

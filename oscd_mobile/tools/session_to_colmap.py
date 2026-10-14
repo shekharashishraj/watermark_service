@@ -1,0 +1,85 @@
+#!/usr/bin/env python
+"""Export a recorded oscd_mobile session as a COLMAP text model (PINHOLE, ARKit poses, LiDAR points)
+so the candidate splat engines can train on it."""
+import argparse
+import json
+import os
+
+import numpy as np
+from PIL import Image
+
+
+def rot_to_qvec(R):
+    """Rotation matrix → COLMAP (qw, qx, qy, qz)."""
+    m = R
+    t = np.trace(m)
+    if t > 0:
+        s = 0.5 / np.sqrt(t + 1.0)
+        return np.array([0.25 / s, (m[2, 1] - m[1, 2]) * s, (m[0, 2] - m[2, 0]) * s, (m[1, 0] - m[0, 1]) * s])
+    i = int(np.argmax(np.diag(m)))
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = 2.0 * np.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k])
+    q = np.zeros(4)
+    q[0] = (m[k, j] - m[j, k]) / s
+    q[1 + i] = 0.25 * s
+    q[1 + j] = (m[j, i] + m[i, j]) / s
+    q[1 + k] = (m[k, i] + m[i, k]) / s
+    return q
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("session")
+    ap.add_argument("out")
+    ap.add_argument("--voxel", type=float, default=0.004)
+    a = ap.parse_args()
+    man = json.load(open(os.path.join(a.session, "session.json")))
+    K = man["intrinsics"]
+    W, H, f, cx, cy = K["width"], K["height"], K["f"], K["cx"], K["cy"]
+    dw, dh = man["depthWidth"], man["depthHeight"]
+    roi = man.get("roi")
+    os.makedirs(os.path.join(a.out, "images"), exist_ok=True)
+    os.makedirs(os.path.join(a.out, "sparse", "0"), exist_ok=True)
+    flip = np.diag([1.0, -1.0, -1.0, 1.0])
+    pts, cols, img_lines = [], [], []
+    for n, kf in enumerate(man["keyframes"]):
+        stem = os.path.join(a.session, "keyframes", f"{kf['id']:06d}")
+        rgb = np.load(stem + "_rgb.npy")
+        depth = np.load(stem + "_depth.npy")
+        conf = np.load(stem + "_conf.npy")
+        name = f"{kf['id']:06d}.png"
+        Image.fromarray(rgb).save(os.path.join(a.out, "images", name))
+        c2w = np.array(kf["arkitCameraToWorld"], dtype=np.float64).reshape(4, 4).T @ flip   # column-major → OpenCV axes
+        w2c = np.linalg.inv(c2w)
+        q, t = rot_to_qvec(w2c[:3, :3]), w2c[:3, 3]
+        img_lines.append(f"{n + 1} {q[0]} {q[1]} {q[2]} {q[3]} {t[0]} {t[1]} {t[2]} 1 {name}\n\n")
+        # LiDAR → world points: depth-map intrinsics are the working ones scaled by dw / W.
+        s = dw / W
+        fd, cxd, cyd = f * s, (cx + 0.5) * s - 0.5, (cy + 0.5) * s - 0.5
+        v, u = np.nonzero((conf >= 2) & np.isfinite(depth) & (depth > 0))
+        z = depth[v, u]
+        cam = np.stack([(u - cxd) / fd * z, (v - cyd) / fd * z, z, np.ones_like(z)])
+        world = (c2w @ cam)[:3].T
+        uw = np.clip(np.round((u + 0.5) / s - 0.5).astype(int), 0, W - 1)
+        vw = np.clip(np.round((v + 0.5) / s - 0.5).astype(int), 0, H - 1)
+        pts.append(world)
+        cols.append(rgb[vw, uw])
+    pts, cols = np.concatenate(pts), np.concatenate(cols)
+    if roi:
+        lo, hi = np.array(roi["min"]), np.array(roi["max"])
+        keep = np.all((pts >= lo) & (pts <= hi), axis=1)
+        pts, cols = pts[keep], cols[keep]
+    _, first = np.unique(np.floor(pts / a.voxel).astype(np.int64), axis=0, return_index=True)
+    pts, cols = pts[first], cols[first]
+    with open(os.path.join(a.out, "sparse", "0", "cameras.txt"), "w") as fh:
+        fh.write(f"1 PINHOLE {W} {H} {f} {f} {cx} {cy}\n")
+    with open(os.path.join(a.out, "sparse", "0", "images.txt"), "w") as fh:
+        fh.writelines(img_lines)
+    with open(os.path.join(a.out, "sparse", "0", "points3D.txt"), "w") as fh:
+        for i, (p, c) in enumerate(zip(pts, cols)):
+            fh.write(f"{i + 1} {p[0]} {p[1]} {p[2]} {c[0]} {c[1]} {c[2]} 0\n")
+    print(f"{len(man['keyframes'])} images, {len(pts)} points → {a.out}")
+
+
+if __name__ == "__main__":
+    main()

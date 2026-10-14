@@ -86,7 +86,7 @@ final class PreviewWorker {
         do {
             status("Loading models…")
             guard let xURL = Bundle.main.url(forResource: "XFeat_480x352", withExtension: "mlmodelc"),
-                  let sURL = Bundle.main.url(forResource: "SAM2_1Tiny_2x1024", withExtension: "mlmodelc"),
+                  let sURL = Bundle.main.url(forResource: "SAM2_1Tiny_1x1024", withExtension: "mlmodelc"),
                   let kernelURL = Bundle.main.url(forResource: "SplatXKernelSrc", withExtension: nil) else {
                 throw PreviewError.message("The app is missing a model or the splatx kernel sources; rebuild it.")
             }
@@ -147,6 +147,18 @@ final class PreviewWorker {
                                              valid: [Bool](repeating: true, count: n))
         do {
             let live = FloatImage(rgb8: f.rgb, width: W, height: H)
+            // The live image's embedding does not depend on the pose: encode it on the Neural Engine
+            // while XFeat and pose estimation run, so only the render's embedding waits for the pose.
+            let liveEmb = LiveEmbedding()
+            let liveDone = DispatchGroup()
+            liveDone.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let s = now()
+                liveEmb.result = Result { try sam.encode(live) }
+                liveEmb.ms = self.ms(s, now())
+                liveDone.leave()
+            }
+            defer { liveDone.wait() }
             let kp = try xfeat.detect(live)
             let t1 = now()
             let est = estimator.estimate(kp)
@@ -162,9 +174,11 @@ final class PreviewWorker {
                                              depthHeight: f.depthHeight, intrinsics: f.intrinsics, pose: pose, roi: roi, render: ren)
             // Live demo: online fusion only (no --refine), so the model stays constrained around the
             // views being fused (refine prunes it down to change Gaussians that smear at novel views).
-            let emb = try sam.encode(render: ren, live: live)
+            let embRender = try sam.encode(ren)
+            liveDone.wait()
+            let embLive = try liveEmb.result!.get()
             let t4 = now()
-            let cues = CuesA.compute(live: live, render: ren, embRender: emb.render, embLive: emb.live, valid: valid)
+            let cues = CuesA.compute(live: live, render: ren, embRender: embRender, embLive: embLive, valid: valid)
             try fusion.addFrame(pose: pose, intrinsics: referenceK, cue: cues.combined, valid: valid)
             try fusion.stepFrame()
             fusedFrames += 1
@@ -179,12 +193,18 @@ final class PreviewWorker {
             return PreviewResult(
                 overlayRGBA: PreviewComposite.overlay(rgb8: f.rgb, changed: changed, valid: valid), renderRGBA: renderRGBA,
                 width: W, height: H,
-                line: String(format: "pose ✓ %d pts | changed %.0f%% of %.0f%% judged | %@ %d frames, %d steps, %d Gaussians | xfeat %.0f · pose %.0f · render %.0f · sam2 %.0f · fusion %.0f · mask %.0f · total %.0f ms",
+                line: String(format: "pose ✓ %d pts | changed %.0f%% of %.0f%% judged | %@ %d frames, %d steps, %d Gaussians | xfeat %.0f · pose %.0f · render %.0f · sam2 %.0f (live %.0f alongside) · fusion %.0f · mask %.0f · total %.0f ms",
                              est.nBAInlierComponents / 2, 100 * Double(flagged) / Double(max(judged, 1)), 100 * Double(judged) / Double(n),
                              "fused", fusedFrames, fusion.totalSteps, fusion.count,
-                             ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t5, t6), ms(t0, t6)))
+                             ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), liveEmb.ms, ms(t4, t5), ms(t5, t6), ms(t0, t6)))
         } catch {
             return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H, line: "frame failed: \(error.localizedDescription)")
         }
     }
+}
+
+/// The live image's embedding, filled in on a background queue while the pose is estimated.
+private final class LiveEmbedding {
+    var result: Result<[Float], Error>?
+    var ms = 0.0
 }

@@ -17,6 +17,14 @@ final class FloatImageTests: XCTestCase {
         XCTAssertEqual(row([1, 2, 3]).resizedNearest(width: 4, height: 1).data, [1, 1, 2, 3])
     }
 
+    func testNearestIntoBufferMatchesResizedNearest() {
+        var s = SeededSampler(seed: 3)
+        let img = FloatImage(width: 37, height: 23, channels: 3, data: (0..<(37 * 23 * 3)).map { _ in Float(s.uniform()) })
+        var buf = [Float](repeating: -1, count: 64 * 50 * 3)
+        buf.withUnsafeMutableBufferPointer { img.writeResizedNearest(into: $0.baseAddress!, width: 64, height: 50) }
+        XCTAssertEqual(buf, img.resizedNearest(width: 64, height: 50).data)
+    }
+
     func testAreaDownsample() {
         let img = FloatImage(width: 4, height: 2, channels: 1, data: [1, 3, 5, 7, 1, 3, 5, 7])
         XCTAssertEqual(img.downsampledArea(factor: 2).data, [2, 6])

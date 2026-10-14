@@ -76,6 +76,19 @@ public struct FloatImage: Sendable {
         return out
     }
 
+    /// `resizedNearest` written straight into a CHW float buffer of `channels × height × width`.
+    public func writeResizedNearest(into dst: UnsafeMutablePointer<Float>, width ow: Int, height oh: Int) {
+        let sx = Float(width) / Float(ow), sy = Float(height) / Float(oh)
+        let xi = (0..<ow).map { min(Int(Float($0) * sx), width - 1) }
+        data.withUnsafeBufferPointer { src in
+            for c in 0..<channels { for y in 0..<oh {
+                let row = src.baseAddress! + (c * height + min(Int(Float(y) * sy), height - 1)) * width
+                let out = dst + (c * oh + y) * ow
+                for x in 0..<ow { out[x] = row[xi[x]] }
+            } }
+        }
+    }
+
     /// Mean over factor×factor blocks (OpenCV INTER_AREA for an integer factor).
     public func downsampledArea(factor k: Int) -> FloatImage {
         let ow = width / k, oh = height / k

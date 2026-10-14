@@ -48,7 +48,7 @@ final class BenchmarkRunner: ObservableObject {
             "This is a Debug build, so timings would be several times too slow. Run the OSCDSpike scheme (Release)."])
         #endif
         guard let xfeatURL = Bundle.main.url(forResource: "XFeat_480x352", withExtension: "mlmodelc"),
-              let samURL = Bundle.main.url(forResource: "SAM2_1Tiny_2x1024", withExtension: "mlmodelc") else {
+              let samURL = Bundle.main.url(forResource: "SAM2_1Tiny_1x1024", withExtension: "mlmodelc") else {
             throw NSError(domain: "bench", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 "Models are missing from the app. Run the two converters, then `xcodegen generate` again."])
         }
@@ -69,7 +69,8 @@ final class BenchmarkRunner: ObservableObject {
 
         progress("SAM2")
         let sam = try SAM2Encoder(compiledModelURL: samURL)
-        rows.append(BenchRow(stage: "sam2_encode_pair", medianMs: try median(10) { _ = try sam.encode(render: image, live: image) }, runs: 10, note: "batch of 2 at 1024²"))
+        rows.append(BenchRow(stage: "sam2_encode_one", medianMs: try median(10) { _ = try sam.encode(image) }, runs: 10, note: "one image at 1024², Neural Engine"))
+        rows.append(BenchRow(stage: "sam2_encode_pair", medianMs: try median(10) { _ = try sam.encode(render: image, live: image) }, runs: 10, note: "two batch-1 calls at 1024²"))
 
         progress("Retrieval")
         let frame = kp

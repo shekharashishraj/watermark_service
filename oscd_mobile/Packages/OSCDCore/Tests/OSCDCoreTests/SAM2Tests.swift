@@ -4,7 +4,7 @@ import XCTest
 final class SAM2Tests: XCTestCase {
     func testParitySAM2EncoderFeedsTheSameCue() throws {
         let d = try Fixtures.dir("cues/frame_000")
-        let pkg = try Fixtures.modelPackage("SAM2_1Tiny_2x1024.mlpackage")
+        let pkg = try Fixtures.modelPackage("SAM2_1Tiny_1x1024.mlpackage")
         let encoder = try SAM2Encoder(compiledModelURL: try XFeatModel.compile(pkg))
         let liveA = try Fixtures.npy(d, "live"), renA = try Fixtures.npy(d, "render")
         let H = liveA.shape[1], W = liveA.shape[2]
@@ -18,6 +18,19 @@ final class SAM2Tests: XCTestCase {
         let ref = try Fixtures.npy(d, "emb").floats(), half = ref.count / 2
         let refCue = CuesA.compute(live: live, render: render, embRender: Array(ref[..<half]), embLive: Array(ref[half...]))
         XCTAssertGreaterThanOrEqual(Self.pearson(ours.feature, refCue.feature), 0.98)
+    }
+
+    func testOneImageGivesOneEmbeddingIndependentOfThePairing() throws {
+        let pkg = try Fixtures.modelPackage("SAM2_1Tiny_1x1024.mlpackage")
+        let encoder = try SAM2Encoder(compiledModelURL: try XFeatModel.compile(pkg))
+        var s = SeededSampler(seed: 5)
+        let a = FloatImage(width: 48, height: 36, channels: 3, data: (0..<(48 * 36 * 3)).map { _ in Float(s.uniform()) })
+        let b = FloatImage(width: 48, height: 36, channels: 3, fill: 0.3)
+        let one = try encoder.encode(a)
+        XCTAssertEqual(one.count, 256 * 64 * 64)
+        let pair = try encoder.encode(render: b, live: a)
+        XCTAssertEqual(pair.live, one)
+        XCTAssertEqual(pair.render, try encoder.encode(b))
     }
 
     static func pearson(_ a: [Float], _ b: [Float]) -> Double {

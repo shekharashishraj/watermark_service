@@ -75,18 +75,28 @@ Note: the app's `anchor_build` row (yield 0.144) still uses O-SCD's (1, 10) m de
 3. find out why SAM2 isn't faster on the Neural Engine (it may be falling back to the GPU or CPU).
 
 ## Splat engines
+Reference: the "before" scan `15-45-15Z` exported with `tools/session_to_colmap.py` (47 images at 480×360, 100k LiDAR points). Both engines ran 3,000 iterations on the Mac (M4) with at most 200k Gaussians and a black background. msplat used `--keep-crs` so its model stays in the ARKit world frame. Both models were rendered by the same renderer (`splatx render`) at the "after" scan's 47 ARKit camera poses. Each frame then got O-SCD's per-frame change cue (pixel + SAM2.1-tiny, `generate_candidate_map` semantics, D3 validity: covered by the reference and inside the ROI). The mask is cue > 1.0, **before any multi-view fusion**.
+
 | Check | splatx-metal | msplat-ios |
 |---|---|---|
-| 3k iters at 480×360 on iPhone (s) | pending human step | pending human step |
-| Peak memory (MB) | pending human step | pending human step |
-| Mac 3k iters (s) | pending human step | pending human step |
-| 1 Custom loss hook (file:line) | pending | pending |
+| Mac: 3k iterations | **47.4 s** (16 ms/iter) | **15.9 s** |
+| Mac: peak memory | 292 MB | 169 MB |
+| PSNR at a training view (same renderer) | **29.4 dB** | 23.7 dB |
+| Masked fraction inside the ROI (median over 47 after-frames) | **0.148** | 0.189 |
+| Mask quality (see `engine_comparison_masks.png`) | clean: moved ball and sunglasses at old and new positions | same objects plus speckle across the sheet from a noisier reference |
+| 3k iterations at 480×360 on the iPhone (s) | pending human step: needs the engine's iOS app | pending human step |
+| iPhone peak memory (MB) | pending human step | pending human step |
+| 1 Custom loss hook (file:line) | pending source read | pending source read |
 | 2 Per-parameter LR incl. xyz = 0 | pending | pending |
 | 3 Expected-depth render | pending | pending |
 | 4 External densify/prune/reset | pending | pending |
 | 5 Rasterizer constants match O-SCD | pending | pending |
-| 6 SH degree 0 | pending | pending |
-| 7 Init from our points | pending | pending |
+| 6 SH degree 0 | trained at SH 3 by default | trained at SH 3 by default |
+| 7 Init from our points | yes (COLMAP points3D from LiDAR) | yes (COLMAP points3D from LiDAR) |
+
+![Engine comparison](engine_comparison_masks.png)
+
+Provisional pick: **splatx-metal**. Its reference is clearly better at equal iterations, and that is what the change cue depends on. msplat is 3× faster, so it remains the fallback if splatx-metal misses the ≤ 180 s on-phone budget. Confirm with the iPhone training time and the capability checklist (items 1–5) before Phase 2.
 
 ## Verified on the Mac (no device or Sol needed)
 | Component | Reference it was checked against | Result |
@@ -103,7 +113,7 @@ Note: the app's `anchor_build` row (yield 0.144) still uses O-SCD's (1, 10) m de
 Still to verify against the real O-SCD on Sol: everything above, at fp16 CUDA on real PASLCD data, plus F-RANSAC (a CUDA-only kernel) and the end-to-end pose and anchor parity.
 
 ## Decisions
-- Engine: pending human step (Task 17 Step 4).
+- Engine: **provisionally splatx-metal** (29.4 vs 23.7 dB, cleaner masks). Pending: iPhone training time (≤ 180 s) and capability items 1–5.
 - Reference build: pending (depends on the engine's on-device timing).
 - D9 (fewer keypoints or lower resolution): pending device timings.
 - D11 (disambiguation depths): **(0.1, 1.0) m adopted**. At 30 cm from the table, keyframes a few cm apart produce too little parallax for O-SCD's 1 m / 10 m gate, so the real-scan yield was 0.011–0.027.

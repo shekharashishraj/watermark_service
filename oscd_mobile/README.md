@@ -20,3 +20,12 @@ detritus not allowed", the checkout sits in an iCloud-synced folder (e.g. Deskto
 Finder metadata onto build products. Build outside it:
 
     swift test --scratch-path ~/Library/Caches/oscd-mobile/OSCDCore-build
+
+## Models (not in git)
+    python3 -m venv tools/.venv && tools/.venv/bin/pip install -r tools/requirements-mac.txt
+    git clone https://github.com/verlab/accelerated_features third_party/accelerated_features
+    tools/.venv/bin/python tools/convert_xfeat_coreml.py     # → Models/XFeat_480x352.mlpackage
+
+If torch.hub fails with CERTIFICATE_VERIFY_FAILED (python.org Python without its certificates),
+copy the weights the checkout already has into torch's cache:
+`mkdir -p ~/.cache/torch/hub/checkpoints && cp third_party/accelerated_features/weights/xfeat.pt ~/.cache/torch/hub/checkpoints/`

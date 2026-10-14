@@ -31,3 +31,12 @@ targets:
         CODE_SIGN_STYLE: Automatic
         PRODUCT_BUNDLE_IDENTIFIER: edu.asu.oscd.spike
         SWIFT_VERSION: "5.0"
+schemes:
+  OSCDSpike:
+    build:
+      targets:
+        OSCDSpike: all
+    run:
+      config: Release        # benchmarks must run optimised; Debug builds OSCDCore at -Onone
+    archive:
+      config: Release

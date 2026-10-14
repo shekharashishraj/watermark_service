@@ -25,6 +25,11 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         config.frameSemantics = [.sceneDepth]
         config.planeDetection = [.horizontal]
         config.isAutoFocusEnabled = false
+        // 1920×1440 maps exactly onto the 480×360 working size (4×4 blocks).
+        if let format = ARWorldTrackingConfiguration.supportedVideoFormats.first(where: {
+            $0.imageResolution == CGSize(width: 1920, height: 1440) }) {
+            config.videoFormat = format
+        }
         arView.session.delegate = self
         arView.session.run(config)
     }
@@ -76,6 +81,12 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         if case .normal = frame.camera.trackingState { normal = true }
         let pose = Pose.fromARKitCameraToWorld(frame.camera.transform)
         guard selector.consider(pose: pose, time: frame.timestamp, trackingNormal: normal) else { return }
+        let res = frame.camera.imageResolution
+        guard let factor = CameraImage.areaFactor(captureWidth: Int(res.width), captureHeight: Int(res.height),
+                                                  workingWidth: Self.working.width, workingHeight: Self.working.height) else {
+            status = "Camera format \(Int(res.width))×\(Int(res.height)) is not supported; it must be 4:3 at a multiple of 480×360."
+            return
+        }
         if store == nil {
             do {
                 store = try makeStore(frame: frame, depth: sceneDepth, roi: roi)
@@ -86,7 +97,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
         guard let store else { return }
-        let rgb = Self.workingRGB(frame.capturedImage)
+        let rgb = Self.workingRGB(frame.capturedImage, factor: factor)
         let (depth, confidence) = Self.copyDepth(sceneDepth)
         let record = FrameRecord(id: keyframeCount, timestamp: frame.timestamp, arkitCameraToWorld: frame.camera.transform.columnMajor)
         keyframeCount += 1
@@ -120,7 +131,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         return withUnsafeBytes(of: &info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
     }
 
-    static func workingRGB(_ buffer: CVPixelBuffer) -> [UInt8] {
+    static func workingRGB(_ buffer: CVPixelBuffer, factor: Int) -> [UInt8] {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         let w = CVPixelBufferGetWidthOfPlane(buffer, 0), h = CVPixelBufferGetHeightOfPlane(buffer, 0)
@@ -128,7 +139,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         let cbcr = CVPixelBufferGetBaseAddressOfPlane(buffer, 1)!.assumingMemoryBound(to: UInt8.self)
         return CameraImage.rgbArea(y: y, yStride: CVPixelBufferGetBytesPerRowOfPlane(buffer, 0),
                                    cbcr: cbcr, cbcrStride: CVPixelBufferGetBytesPerRowOfPlane(buffer, 1),
-                                   width: w, height: h, factor: w / working.width)
+                                   width: w, height: h, factor: factor)
     }
 
     static func copyDepth(_ data: ARDepthData) -> ([Float], [UInt8]) {

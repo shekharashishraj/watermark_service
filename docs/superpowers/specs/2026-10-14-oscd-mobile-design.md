@@ -264,6 +264,7 @@ RANSAC (2,000 tiny LM solves) runs batched on the GPU, and mini-BA runs on the C
 | D8 | Post-visit map update | Not implemented | Scope |
 | D9 | 6,144 keypoints, 1/4 resolution | Reduced only if the spike requires it, and recorded in the spike report | Performance |
 | D10 | Principal point at the image centre | ARKit's calibrated principal point | The iPhone's principal point is off-centre by a few pixels; using the centre would add pose error |
+| D12 | XFeat NMS takes the top 1.5·top_k heatmap values; when there are fewer real local maxima, the rest are zero-valued "junk" positions whose positive scores can push low-scoring real keypoints out of the final top_k | Only real local maxima compete for the top_k, so a few more tail keypoints survive (3,668 vs 3,636 on a test image) | Which junk positions CUDA `topk` returns is implementation-defined and can't be reproduced. The top-scoring keypoints, the ones matching relies on, are identical. |
 
 ### 6.8 Source
 The full extraction report, with file:line citations, is in [`oscd_mobile/docs/oscd_code_reference.md`](../../../oscd_mobile/docs/oscd_code_reference.md).

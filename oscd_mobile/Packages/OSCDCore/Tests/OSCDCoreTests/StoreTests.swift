@@ -59,4 +59,13 @@ final class StoreTests: XCTestCase {
         let red = CameraImage.rgbArea(y: [UInt8](repeating: 76, count: 16), yStride: 4, cbcr: cbcr, cbcrStride: 4, width: 4, height: 4, factor: 2)
         XCTAssertGreaterThanOrEqual(red[0], 250); XCTAssertLessThanOrEqual(red[1], 3); XCTAssertLessThanOrEqual(red[2], 3)
     }
+
+    /// Review fix: a capture size that is not an exact integer multiple of 480×360 must be rejected,
+    /// not crash the recorder when the 480×360 RGB array is written.
+    func testAreaFactorAcceptsOnlyExactMultiples() {
+        XCTAssertEqual(CameraImage.areaFactor(captureWidth: 1920, captureHeight: 1440, workingWidth: 480, workingHeight: 360), 4)
+        XCTAssertNil(CameraImage.areaFactor(captureWidth: 1920, captureHeight: 1080, workingWidth: 480, workingHeight: 360))
+        XCTAssertNil(CameraImage.areaFactor(captureWidth: 1000, captureHeight: 750, workingWidth: 480, workingHeight: 360))
+        XCTAssertNil(CameraImage.areaFactor(captureWidth: 240, captureHeight: 180, workingWidth: 480, workingHeight: 360))
+    }
 }

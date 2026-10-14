@@ -1,5 +1,13 @@
 /// ARKit `capturedImage` (420f: full-range BT.601 luma plane + interleaved CbCr plane at half size).
 public enum CameraImage {
+    /// The integer block size that maps the capture size exactly onto the working size, or nil when
+    /// there is none (wrong aspect ratio, non-integer ratio, or capture smaller than working).
+    public static func areaFactor(captureWidth: Int, captureHeight: Int, workingWidth: Int, workingHeight: Int) -> Int? {
+        guard workingWidth > 0, workingHeight > 0, captureWidth % workingWidth == 0 else { return nil }
+        let k = captureWidth / workingWidth
+        return k >= 1 && captureHeight == k * workingHeight ? k : nil
+    }
+
     /// RGB bytes (H/factor × W/factor × 3), each the mean of a factor×factor block (OpenCV INTER_AREA).
     public static func rgbArea(y: UnsafePointer<UInt8>, yStride: Int, cbcr: UnsafePointer<UInt8>, cbcrStride: Int,
                                width: Int, height: Int, factor: Int) -> [UInt8] {

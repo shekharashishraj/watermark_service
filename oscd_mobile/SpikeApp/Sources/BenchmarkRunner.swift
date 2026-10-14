@@ -43,6 +43,10 @@ final class BenchmarkRunner: ObservableObject {
     }
 
     static func measureAll(progress: (String) -> Void) throws -> [BenchRow] {
+        #if DEBUG
+        throw NSError(domain: "bench", code: 2, userInfo: [NSLocalizedDescriptionKey:
+            "This is a Debug build, so timings would be several times too slow. Run the OSCDSpike scheme (Release)."])
+        #endif
         guard let xfeatURL = Bundle.main.url(forResource: "XFeat_480x352", withExtension: "mlmodelc"),
               let samURL = Bundle.main.url(forResource: "SAM2_1Tiny_2x1024", withExtension: "mlmodelc") else {
             throw NSError(domain: "bench", code: 1, userInfo: [NSLocalizedDescriptionKey:

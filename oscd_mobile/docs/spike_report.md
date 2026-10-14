@@ -44,6 +44,36 @@ The pipeline is correct on real data (self-tests). Across scans it fails for two
 
 Capture rules for the next scans: a patterned mat, newspaper or printed sheet under the objects; the same orientation (portrait) in both scans; the phone about 40–60 cm above the table; slow sweeps.
 
+## Rescan: patterned sheet, portrait only (`fixtures/device_pull2`, scans `15-45-15Z` → `15-45-52Z`, 47 keyframes each)
+Floral bed sheet under a tennis ball and sunglasses; objects moved between the scans; phone about 27–36 cm above the surface.
+
+| Check | Result |
+|---|---|
+| XFeat keypoints per frame | about 3,500 (white table: about 1,000) |
+| Anchor yield, D11 depths | 0.576 / 0.577 (white table: 0.31–0.37) |
+| Pose before → after | **29 / 47 accepted**, median 0.59° and 8.7 mm from ARKit |
+| Pose after → before | **31 / 47 accepted**, median 0.83° and 8.2 mm from ARKit |
+| Rejections | all `too_few_inliers` (18 and 16 frames) |
+| Pose estimate time (Mac M4, 47 reference keyframes) | median 189–247 ms |
+
+iPhone 17 Pro benchmark (`bench_2026-10-14T15-46-37Z.csv`, 3,485 keypoints per image):
+
+| Stage | ms | Target | Pass |
+|---|---|---|---|
+| XFeat | 8.8 | ≤ 15 | yes |
+| Retrieval vs 80 keyframes | 223.3 | ≤ 60 | **no** (cost grows with the square of the keypoint count) |
+| P4P-RANSAC + mini-BA | 38.9 + 8.5 | ≤ 20 | **no** |
+| SAM2 pair | 460.8 | ≤ 240 | **no** |
+| Pixel cue | 52.1 | – | – |
+| XFeat all keyframes + anchor build | 0.47 s + 3.5 s | ≤ 30 s | yes |
+
+Note: the app's `anchor_build` row (yield 0.144) still uses O-SCD's (1, 10) m depths; the D11 yield above comes from the harness.
+
+**Reading:** with static texture and one orientation, O-SCD's XFeat + PnP pose works on the phone's data (sub-degree, under 1 cm against ARKit for accepted frames). The open problem is speed. Retrieval, RANSAC and SAM2 each miss their targets, so a live loop would update masks at roughly 1–2 Hz instead of ≥ 3 Hz. Candidate fixes, in the order spec §11 lists them:
+1. D9: fewer keypoints (e.g. 2,048 cuts retrieval by about 3×);
+2. retrieval and RANSAC on the GPU (D5);
+3. find out why SAM2 isn't faster on the Neural Engine (it may be falling back to the GPU or CPU).
+
 ## Splat engines
 | Check | splatx-metal | msplat-ios |
 |---|---|---|

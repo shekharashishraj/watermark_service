@@ -1,0 +1,33 @@
+name: OSCDSpike
+options:
+  bundleIdPrefix: edu.asu.oscd
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  OSCDCore:
+    path: ../Packages/OSCDCore
+targets:
+  OSCDSpike:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../Models
+        optional: true
+    dependencies:
+      - package: OSCDCore
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: OSCD Spike
+        NSCameraUsageDescription: Scans the tabletop for change detection.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arkit]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        PRODUCT_BUNDLE_IDENTIFIER: edu.asu.oscd.spike
+        SWIFT_VERSION: "5.0"

@@ -30,3 +30,8 @@ Finder metadata onto build products. Build outside it:
 If torch.hub fails with CERTIFICATE_VERIFY_FAILED (python.org Python without its certificates),
 copy the weights the checkout already has into torch's cache:
 `mkdir -p ~/.cache/torch/hub/checkpoints && cp third_party/accelerated_features/weights/xfeat.pt ~/.cache/torch/hub/checkpoints/`
+
+## Spike app
+    cd SpikeApp && xcodegen generate && open OSCDSpike.xcodeproj
+Capture tab: tap the table, Record, sweep, Stop → Documents/sessions/<date>/ (Files app).
+Benchmark tab: times each stage on the device → Documents/benchmarks/bench_<date>.csv.

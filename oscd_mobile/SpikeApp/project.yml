@@ -16,9 +16,11 @@ targets:
       - path: Sources
       - path: ../Models
         optional: true
-      - path: ../third_party/splatx-metal/build/splatx-ios.metallib
+      # splatx kernels are compiled on the device at first use: Xcode 27's offline metallib
+      # (file format 2.9) cannot be loaded by iOS 26.
+      - path: ../third_party/splatx-metal/Sources/SplatXKernelSrc
+        type: folder
         buildPhase: resources
-        optional: true
     dependencies:
       - package: OSCDCore
       - package: SplatX

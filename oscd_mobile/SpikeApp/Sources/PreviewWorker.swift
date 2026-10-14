@@ -70,8 +70,8 @@ final class PreviewWorker {
             status("Loading models…")
             guard let xURL = Bundle.main.url(forResource: "XFeat_480x352", withExtension: "mlmodelc"),
                   let sURL = Bundle.main.url(forResource: "SAM2_1Tiny_2x1024", withExtension: "mlmodelc"),
-                  let libURL = Bundle.main.url(forResource: "splatx-ios", withExtension: "metallib") else {
-                throw PreviewError.message("The app is missing a model or splatx-ios.metallib; rebuild it with both converters and the iOS metallib.")
+                  let kernelURL = Bundle.main.url(forResource: "SplatXKernelSrc", withExtension: nil) else {
+                throw PreviewError.message("The app is missing a model or the splatx kernel sources; rebuild it.")
             }
             let xfeat = try XFeatModel(compiledModelURL: xURL)
             let sam = try SAM2Encoder(compiledModelURL: sURL)
@@ -92,8 +92,8 @@ final class PreviewWorker {
             let anchors = AnchorBuilder.build(keyframes: views, intrinsics: store.manifest.intrinsics,
                                               disambiguationDepths: Self.disambiguationDepths)
             let estimator = PoseEstimator(anchors: anchors)
-            status("Opening the reference model…")
-            let renderer = try SplatRenderer(plyPath: plyURL.path, metallibPath: libURL.path)
+            status("Opening the reference model (compiling splatx kernels on the phone)…")
+            let renderer = try SplatRenderer(plyPath: plyURL.path, kernelSourceDir: kernelURL.path)
             status(String(format: "Ready: %d anchors from %d keyframes. Point the phone at the table.", anchors.anchorCount, views.count))
             lock.lock(); ready = true; lock.unlock()
 

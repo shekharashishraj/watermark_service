@@ -12,13 +12,15 @@ enum PreviewError: LocalizedError {
 final class SplatRenderer {
     private let session: OpaquePointer
 
-    init(plyPath: String, metallibPath: String) throws {
-        var err = [CChar](repeating: 0, count: 512)
+    /// `kernelSourceDir`: splatx's Sources/SplatXKernelSrc, bundled with the app. With no metallib
+    /// given, splatx compiles these kernels with the device's Metal compiler when the session opens.
+    init(plyPath: String, kernelSourceDir: String) throws {
+        var err = [CChar](repeating: 0, count: 1024)
         let opened: OpaquePointer? = plyPath.withCString { ply in
-            metallibPath.withCString { lib in
+            kernelSourceDir.withCString { src in
                 var args = SxRenderSessionArgs()
                 args.ply_path = ply
-                args.metallib_path = lib
+                args.kernel_src_dir = src
                 return sx_render_session_open(&args, &err, Int32(err.count))
             }
         }

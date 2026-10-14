@@ -32,6 +32,21 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         }
         arView.session.delegate = self
         arView.session.run(config)
+        started = true
+    }
+
+    private var started = false
+
+    /// The Preview tab needs the camera: pause this session while it is shown.
+    func pause() {
+        guard started else { return }
+        if recording { toggleRecording() }
+        arView.session.pause()
+    }
+
+    func resume() {
+        guard started else { return }
+        start()
     }
 
     func placeROI(at point: CGPoint) {

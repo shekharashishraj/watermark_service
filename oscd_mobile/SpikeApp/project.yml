@@ -2,10 +2,12 @@ name: OSCDSpike
 options:
   bundleIdPrefix: edu.asu.oscd
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "26.0"        # splatx-metal (reference rendering) requires iOS 26
 packages:
   OSCDCore:
     path: ../Packages/OSCDCore
+  SplatX:
+    path: ../third_party/splatx-metal     # git clone https://github.com/PoSTMEDIA-AI/splatx-metal (see README)
 targets:
   OSCDSpike:
     type: application
@@ -14,8 +16,13 @@ targets:
       - path: Sources
       - path: ../Models
         optional: true
+      - path: ../third_party/splatx-metal/build/splatx-ios.metallib
+        buildPhase: resources
+        optional: true
     dependencies:
       - package: OSCDCore
+      - package: SplatX
+        product: SplatXTrainC
     info:
       path: Sources/Info.plist
       properties:

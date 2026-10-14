@@ -38,7 +38,6 @@ final class PreviewWorker {
     private var stopRequested = false
     private var ready = false
     private let wake = DispatchSemaphore(value: 0)
-    private var lastFinish: UInt64 = 0
     private var refineRequested = false
     private var refined = false
 
@@ -72,9 +71,26 @@ final class PreviewWorker {
         wake.signal()
     }
 
-    private func status(_ s: String) { onStatus?(s) }
+    /// Documents/preview/preview-log.txt — status messages and one line per processed frame
+    /// (NSLog does not reach `devicectl --console`; pull this file instead).
+    private var logHandle: FileHandle?
+    private var fusedFrames = 0
+
+    private func log(_ s: String) {
+        let line = "\(String(format: "%.3f", Date().timeIntervalSince1970)) \(s)\n"
+        logHandle?.write(Data(line.utf8))
+    }
+
+    private func status(_ s: String) {
+        log("[status] " + s)
+        onStatus?(s)
+    }
 
     private func run(assets: URL) {
+        let logURL = assets.appendingPathComponent("preview-log.txt")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        logHandle = try? FileHandle(forWritingTo: logURL)
+        defer { try? logHandle?.close() }
         do {
             status("Loading models…")
             guard let xURL = Bundle.main.url(forResource: "XFeat_480x352", withExtension: "mlmodelc"),
@@ -129,6 +145,7 @@ final class PreviewWorker {
                 lock.unlock()
                 let result = process(frame, xfeat: xfeat, sam: sam, estimator: estimator, renderer: renderer,
                                      fusion: fusion, referenceK: anchors.intrinsics, roi: roi)
+                log(result.line)
                 onResult?(result)
                 lock.lock(); processing = false; lock.unlock()
             }
@@ -145,8 +162,6 @@ final class PreviewWorker {
         let W = f.intrinsics.width, H = f.intrinsics.height, n = W * H
         let now = { DispatchTime.now().uptimeNanoseconds }
         let t0 = now()
-        let rate = lastFinish > 0 ? 1e9 / Double(t0 - lastFinish) : 0
-        defer { lastFinish = now() }
         let plain = PreviewComposite.overlay(rgb8: f.rgb, changed: [Bool](repeating: false, count: n),
                                              valid: [Bool](repeating: true, count: n))
         do {
@@ -172,6 +187,7 @@ final class PreviewWorker {
                 let cues = CuesA.compute(live: live, render: ren, embRender: emb.render, embLive: emb.live, valid: valid)
                 try fusion.addFrame(pose: pose, intrinsics: referenceK, cue: cues.combined, valid: valid)
                 try fusion.stepFrame()
+                fusedFrames += 1
                 t5 = now()
             }
             // O-SCD's mask: the change model rendered at this pose, value > 0.5 (oscd.py:258-263).
@@ -184,10 +200,10 @@ final class PreviewWorker {
             return PreviewResult(
                 overlayRGBA: PreviewComposite.overlay(rgb8: f.rgb, changed: changed, valid: valid), renderRGBA: renderRGBA,
                 width: W, height: H,
-                line: String(format: "pose ✓ %d pts | changed %.0f%% of %.0f%% judged | %@ %d frames, %d Gaussians | xfeat %.0f · pose %.0f · render %.0f · sam2 %.0f · fusion %.0f · mask %.0f ms | %.2f Hz",
+                line: String(format: "pose ✓ %d pts | changed %.0f%% of %.0f%% judged | %@ %d frames, %d steps, %d Gaussians | xfeat %.0f · pose %.0f · render %.0f · sam2 %.0f · fusion %.0f · mask %.0f · total %.0f ms",
                              est.nBAInlierComponents / 2, 100 * Double(flagged) / Double(max(judged, 1)), 100 * Double(judged) / Double(n),
-                             refined ? "refined," : "fused", fusion.totalSteps / 16, fusion.count,
-                             ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t5, t6), rate))
+                             refined ? "refined," : "fused", fusedFrames, fusion.totalSteps, fusion.count,
+                             ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t5, t6), ms(t0, t6)))
         } catch {
             return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H, line: "frame failed: \(error.localizedDescription)")
         }

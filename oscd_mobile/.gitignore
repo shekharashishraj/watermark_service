@@ -1,0 +1,9 @@
+fixtures/
+Models/
+third_party/
+tools/.venv/
+.build/
+.swiftpm/
+SpikeApp/*.xcodeproj
+xcuserdata/
+DerivedData/

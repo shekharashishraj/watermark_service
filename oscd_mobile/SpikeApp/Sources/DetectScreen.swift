@@ -183,7 +183,7 @@ struct ResultsView: View {
         List {
             Section {
                 if result.frames.isEmpty {
-                    Text("The camera could not be placed in any frame, so nothing was judged.")
+                    Text("No frame of \(result.afterLabel) could be lined up with \(result.beforeLabel), so nothing was judged. The two scans need the same table, seen from similar distances.")
                         .font(.system(size: 13)).foregroundColor(VeriColor.nickel)
                 } else {
                     let i = min(Int(index.rounded()), result.frames.count - 1)
@@ -201,7 +201,7 @@ struct ResultsView: View {
 
             Section("Summary") {
                 row("Camera placed", "\(s.framesWithPose) of \(s.frames) frames")
-                row("Changed", String(format: "%.1f%% of the judged table area", 100 * s.changedFraction))
+                row("Changed", s.framesWithPose == 0 ? "not judged" : String(format: "%.1f%% of the judged table area", 100 * s.changedFraction))
                 row("Refine", s.refined ? "Yes" : "No (online fusion only)")
                 row("Total time", String(format: "%.0f s", s.totalSeconds))
             }

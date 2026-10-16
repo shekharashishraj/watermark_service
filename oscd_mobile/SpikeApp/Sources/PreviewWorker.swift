@@ -102,7 +102,7 @@ final class PreviewWorker {
                 + String(format: " · total %.0f ms", totalMs)
             guard out.pose != nil, let ren = out.render else {
                 return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
-                                     headline: "Can't place the camera: \(out.rejection ?? "no match"). Stay over the table, about as far as you scanned.",
+                                     headline: "Can't line this view up with \(method.beforeLabel): \(out.rejection ?? "no match"). Point at the same table from about as far as that scan.",
                                      details: details)
             }
             let judged = out.valid.filter { $0 }.count

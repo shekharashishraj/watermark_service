@@ -31,6 +31,8 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             config.videoFormat = format
         }
         arView.session.delegate = self
+        AppLog.write("capture: session.run format=\(config.videoFormat.imageResolution) camera=\(AppLog.cameraAuthorization())")
+        firstFrameLogged = false
         arView.session.run(config)
         started = true
     }
@@ -41,6 +43,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     func pause() {
         guard started else { return }
         if recording { toggleRecording() }
+        AppLog.write("capture: session.pause")
         arView.session.pause()
     }
 
@@ -90,7 +93,28 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    private var firstFrameLogged = false
+
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        AppLog.write("capture: didFailWithError \(error.localizedDescription) \((error as NSError).code)")
+    }
+
+    func sessionWasInterrupted(_ session: ARSession) { AppLog.write("capture: interrupted") }
+
+    func sessionInterruptionEnded(_ session: ARSession) { AppLog.write("capture: interruption ended") }
+
+    func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        AppLog.write("capture: tracking \(camera.trackingState)")
+    }
+
+    private func logFirstFrame() {
+        guard !firstFrameLogged else { return }
+        firstFrameLogged = true
+        AppLog.write("capture: first frame")
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        logFirstFrame()
         guard recording, let sceneDepth = frame.sceneDepth, let roi else { return }
         var normal = false
         if case .normal = frame.camera.trackingState { normal = true }

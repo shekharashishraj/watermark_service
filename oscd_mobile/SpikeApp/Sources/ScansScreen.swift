@@ -96,7 +96,9 @@ struct ScanStatusChip: View {
     var body: some View {
         if let d = scan.latestDetection {
             let vs = library.scans.first { $0.id == d.beforeID }?.label ?? "a deleted scan"
-            if d.changedPixels > 0 {
+            if d.framesWithPose == 0 {
+                VeriChip(text: "Checked against \(vs) · couldn't line up any frame", bg: VeriColor.inputFill, fg: VeriColor.nickel)
+            } else if d.changedPixels > 0 {
                 VeriChip(text: String(format: "Checked against %@ · %.0f%% changed", vs, 100 * d.changedFraction),
                          bg: VeriColor.failChipBg, fg: VeriColor.failChipFg)
             } else {

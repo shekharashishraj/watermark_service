@@ -12,6 +12,9 @@ final class ScanLibrary: ObservableObject {
         didSet { UserDefaults.standard.set(beforeID, forKey: "beforeScanID") }
     }
 
+    /// A `-beforeScanID <scan folder>` launch argument sets the before-scan and keeps it.
+    init() { UserDefaults.standard.set(beforeID, forKey: "beforeScanID") }
+
     static var sessionsDir: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("sessions")
     }

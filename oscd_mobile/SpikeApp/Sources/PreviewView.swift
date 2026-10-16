@@ -18,6 +18,7 @@ struct PreviewView: View {
         ZStack(alignment: .top) {
             ARViewHost(arView: controller.arView).ignoresSafeArea()
             VStack(spacing: 8) {
+                beforePicker
                 HStack(alignment: .top, spacing: 8) {
                     panel(controller.overlay, title: "Changes")
                     panel(controller.reference, title: "\(library.before?.label ?? "Before-scan") from here")
@@ -59,6 +60,31 @@ struct PreviewView: View {
             if library.before == nil { controller.status = "No scan has a 3D model yet. See Settings › Building a scan's 3D model." }
         }
         .onDisappear { controller.stopSession() }
+    }
+
+    /// Which scan's 3D model the camera is compared with (only scans with a model; locked while running).
+    private var beforePicker: some View {
+        Menu {
+            ForEach(library.scans.filter(\.hasReference).reversed()) { scan in
+                Button {
+                    library.beforeID = scan.id
+                } label: {
+                    Label("\(scan.label) · \(scan.frameCount) frames · \(Formatters.date(scan.createdAt))",
+                          systemImage: scan.id == library.before?.id ? "checkmark" : "")
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text("Comparing with").foregroundStyle(.secondary)
+                Text(library.before.map { "\($0.label) · \(Formatters.date($0.createdAt))" } ?? "no scan with a 3D model")
+                    .fontWeight(.semibold)
+                if !controller.running { Image(systemName: "chevron.down") }
+            }
+            .font(.footnote)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+        }
+        .disabled(controller.running)
     }
 
     @ViewBuilder private func panel(_ image: UIImage?, title: String) -> some View {

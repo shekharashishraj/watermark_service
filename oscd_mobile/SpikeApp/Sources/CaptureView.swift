@@ -7,6 +7,7 @@ struct ARViewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARView {
         let view = controller.arView
         view.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:))))
+        AppLog.write("capture: makeUIView")
         controller.start()
         return view
     }

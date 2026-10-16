@@ -12,6 +12,7 @@ struct OSCDSpikeApp: App {
         WindowGroup {
             RootView(capture: capture, bench: bench, preview: preview, runner: runner)
                 .environmentObject(library)
+                .preferredColorScheme(.light)        // the Romulus look is light-only
         }
     }
 }
@@ -47,6 +48,7 @@ struct RootView: View {
                 .tag(Tab.settings)
         }
         .tint(VeriColor.primary)
-        .onAppear { library.refresh() }
+        .onAppear { library.refresh(); AppLog.write("app: launched, camera=\(AppLog.cameraAuthorization())") }
+        .onChange(of: tab) { _, t in AppLog.write("app: tab \(t)") }
     }
 }

@@ -51,6 +51,7 @@ final class MethodA {
         var pose: Pose?
         var rejection: String?           // plain-language reason when the camera could not be placed
         var anchorPoints = 0
+        var matches = 0                  // 2D–3D correspondences with the before-scan's anchors
         var valid: [Bool] = []
         var changed: [Bool] = []
         var render: FloatImage?
@@ -151,10 +152,11 @@ final class MethodA {
                         (Stage.pnp, est.timings.pnpMs), (Stage.bundleAdjust, est.timings.bundleAdjustMs)]
         clock = DispatchTime.now().uptimeNanoseconds
         out.anchorPoints = est.nBAInlierComponents / 2
+        out.matches = est.nCorrespondences
         guard est.accepted, let pose = est.pose else {
             out.rejection = est.nCorrespondences < 150
-                ? "Too few points match \(beforeLabel) here"
-                : "The matches with \(beforeLabel) don't agree on one camera position"
+                ? "only \(est.nCorrespondences) points match \(beforeLabel)"
+                : "\(est.nCorrespondences) points match \(beforeLabel), but they don't agree on where the camera is"
             return out
         }
         out.pose = pose

@@ -25,11 +25,14 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
             config.videoFormat = format
         }
         arView.session.delegate = self
+        AppLog.write("live: session.run format=\(config.videoFormat.imageResolution) camera=\(AppLog.cameraAuthorization())")
+        firstFrameLogged = false
         arView.session.run(config)
     }
 
     func stopSession() {
         stop()
+        AppLog.write("live: session.pause")
         arView.session.pause()
     }
 
@@ -58,7 +61,28 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
         running = false
     }
 
+    private var firstFrameLogged = false
+
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        AppLog.write("live: didFailWithError \(error.localizedDescription) \((error as NSError).code)")
+    }
+
+    func sessionWasInterrupted(_ session: ARSession) { AppLog.write("live: interrupted") }
+
+    func sessionInterruptionEnded(_ session: ARSession) { AppLog.write("live: interruption ended") }
+
+    func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        AppLog.write("live: tracking \(camera.trackingState)")
+    }
+
+    private func logFirstFrame() {
+        guard !firstFrameLogged else { return }
+        firstFrameLogged = true
+        AppLog.write("live: first frame")
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        logFirstFrame()
         guard let worker, worker.wantsFrame, let sceneDepth = frame.sceneDepth else { return }
         let res = frame.camera.imageResolution
         let working = CaptureController.working

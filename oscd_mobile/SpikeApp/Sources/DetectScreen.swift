@@ -1,0 +1,245 @@
+import OSCDCore
+import SwiftUI
+
+/// Pick the before-scan (it needs its 3D model) and the after-scan, then run detection.
+struct DetectScreen: View {
+    @EnvironmentObject private var library: ScanLibrary
+    @ObservedObject var runner: DetectionRunner
+    @State private var afterID = ""
+    @State private var refine = false
+    @State private var showRun = false
+
+    private var before: ScanInfo? { library.before }
+    private var after: ScanInfo? {
+        library.scans.first { $0.id == afterID && $0.id != before?.id } ?? library.scans.last { $0.id != before?.id }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VeriHeader(title: "Detect")
+            List {
+                Section {
+                    if library.scans.contains(where: \.hasReference) {
+                        ForEach(library.scans.filter(\.hasReference)) { scan in
+                            pick(scan, selected: scan.id == before?.id) { library.beforeID = scan.id }
+                        }
+                    } else {
+                        Text("No scan has a 3D model yet. Record the before-scan, then build its model on the Mac with tools/build_reference.sh.")
+                            .font(.system(size: 13)).foregroundColor(VeriColor.nickel)
+                    }
+                } header: { Text("Before") } footer: { Text("The scan whose 3D model is the reference.") }
+
+                Section("After: check for changes") {
+                    ForEach(library.scans.filter { $0.id != before?.id }.reversed()) { scan in
+                        pick(scan, selected: scan.id == after?.id) { afterID = scan.id }
+                    }
+                }
+
+                Section("Method") {
+                    HStack {
+                        Text("A · O-SCD (exact)")
+                        Spacer()
+                        Image(systemName: "checkmark.circle.fill").foregroundColor(VeriColor.primary)
+                    }
+                    HStack {
+                        Text("B · adds depth and colour")
+                        Spacer()
+                        Text("not built yet").font(.system(size: 12))
+                    }
+                    .foregroundColor(VeriColor.nickel)
+                    Toggle(isOn: $refine) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Refine at the end")
+                            Text("O-SCD's final pass, about 1 minute more").font(.system(size: 12)).foregroundColor(VeriColor.nickel)
+                        }
+                    }
+                    .tint(VeriColor.primary)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            VeriButton(title: "Run detection", systemImage: "play.fill", disabled: before == nil || after == nil) {
+                guard let before, let after else { return }
+                runner.start(before: before, after: after, refine: refine)
+                showRun = true
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        }
+        .background(VeriColor.background)
+        .onAppear {
+            library.refresh()
+            autoRunFromLaunchArguments()
+        }
+        .fullScreenCover(isPresented: $showRun, onDismiss: { library.refresh() }) {
+            DetectionSheet(runner: runner) { showRun = false }
+        }
+    }
+
+    private func autoRunFromLaunchArguments() {
+        let d = UserDefaults.standard
+        guard !Self.autoRan, let b = d.string(forKey: "detectBefore"), let a = d.string(forKey: "detectAfter") else { return }
+        Self.autoRan = true
+        library.beforeID = b
+        afterID = a
+        guard let before = library.scans.first(where: { $0.id == b && $0.hasReference }),
+              let after = library.scans.first(where: { $0.id == a }) else { return }
+        runner.start(before: before, after: after, refine: d.bool(forKey: "detectRefine"))
+        showRun = true
+    }
+
+    private static var autoRan = false
+
+    private func pick(_ scan: ScanInfo, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(scan.label).foregroundColor(VeriColor.textPrimary)
+                    Text("\(scan.frameCount) frames · \(Formatters.date(scan.createdAt))").font(.system(size: 12)).foregroundColor(VeriColor.nickel)
+                }
+                Spacer()
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .foregroundColor(selected ? VeriColor.primary : VeriColor.disabledFill)
+            }
+        }
+    }
+}
+
+/// Progress while detection runs, then the results.
+struct DetectionSheet: View {
+    @ObservedObject var runner: DetectionRunner
+    let onClose: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                VeriHeader(title: runner.result != nil ? "Results" : "Detecting", trailing: AnyView(
+                    Button(runner.running ? "Cancel" : "Close") {
+                        if runner.running { runner.cancel() } else { onClose() }
+                    }
+                    .font(.system(size: 15, weight: .medium)).foregroundColor(VeriColor.primary)
+                ))
+                if let result = runner.result {
+                    ResultsView(result: result)
+                } else {
+                    progressList
+                }
+            }
+            .background(VeriColor.background)
+        }
+        .interactiveDismissDisabled(runner.running)
+        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+    }
+
+    private var progressList: some View {
+        List {
+            Section {
+                ForEach(runner.steps) { step in stepRow(step) }
+            }
+            if let image = runner.latest {
+                Section {
+                    Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 8))
+                } footer: { Text("Latest frame. Red: changed. Dimmed: not judged (off the table or not in the 3D model).") }
+            }
+            if let error = runner.error {
+                Section("Stopped") { Text(error).foregroundColor(VeriColor.danger).font(.system(size: 13)) }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func stepRow(_ step: DetectionRunner.Step) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            switch step.state {
+            case .pending: Image(systemName: "circle").foregroundColor(VeriColor.mediumGrey)
+            case .active: ProgressView().controlSize(.small)
+            case .done: Image(systemName: "checkmark.circle.fill").foregroundColor(VeriColor.darkGreen)
+            case .failed: Image(systemName: "xmark.circle.fill").foregroundColor(VeriColor.danger)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(step.title).font(.system(size: 14)).foregroundColor(VeriColor.textPrimary)
+                switch step.state {
+                case .active(let s), .done(let s), .failed(let s):
+                    if !s.isEmpty { Text(s).font(.system(size: 11)).foregroundColor(VeriColor.nickel) }
+                case .pending: EmptyView()
+                }
+                if step.id == 1, case .active = step.state {
+                    ProgressView(value: runner.progress).tint(VeriColor.primary)
+                }
+            }
+        }
+    }
+}
+
+/// The masks (one frame at a time, with a slider) and the timings, per stage.
+struct ResultsView: View {
+    let result: DetectionResult
+    @State private var index = 0.0
+
+    var body: some View {
+        let s = result.summary
+        List {
+            Section {
+                if result.frames.isEmpty {
+                    Text("The camera could not be placed in any frame, so nothing was judged.")
+                        .font(.system(size: 13)).foregroundColor(VeriColor.nickel)
+                } else {
+                    let i = min(Int(index.rounded()), result.frames.count - 1)
+                    if let data = try? Data(contentsOf: result.frames[i]), let image = UIImage(data: data), let cg = image.cgImage {
+                        Image(uiImage: UIImage(cgImage: cg, scale: 1, orientation: .right))
+                            .resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    if result.frames.count > 1 {
+                        Slider(value: $index, in: 0...Double(result.frames.count - 1), step: 1).tint(VeriColor.primary)
+                    }
+                    Text("Frame \(i + 1) of \(result.frames.count) · red: changed · dimmed: not judged")
+                        .font(.system(size: 11)).foregroundColor(VeriColor.nickel)
+                }
+            } header: { Text("\(result.afterLabel) against \(result.beforeLabel)") }
+
+            Section("Summary") {
+                row("Camera placed", "\(s.framesWithPose) of \(s.frames) frames")
+                row("Changed", String(format: "%.1f%% of the judged table area", 100 * s.changedFraction))
+                row("Refine", s.refined ? "Yes" : "No (online fusion only)")
+                row("Total time", String(format: "%.0f s", s.totalSeconds))
+            }
+
+            let setup = s.timings.stages.filter { MethodA.Stage.setup.contains($0) }
+            if !setup.isEmpty {
+                Section("Setup (once)") {
+                    ForEach(setup, id: \.self) { row($0, Formatters.ms(s.timings.total($0))) }
+                }
+            }
+            let finishing = [MethodA.Stage.refine, MethodA.Stage.finalMasks]
+            let perFrame = s.timings.stages.filter { !MethodA.Stage.setup.contains($0) && !finishing.contains($0) }
+            if !perFrame.isEmpty {
+                Section {
+                    ForEach(perFrame, id: \.self) { stage in
+                        row(stage, (s.timings.median(stage).map(Formatters.ms) ?? "–") + "  ×\(s.timings.count(stage))")
+                    }
+                } header: { Text("Per frame (median)") } footer: {
+                    Text("×N is how many frames ran that step. Frames where the camera could not be placed stop after the pose steps. SAM2 on the live image runs alongside the pose, so it does not add to the frame time.")
+                }
+            }
+            let after = s.timings.stages.filter { finishing.contains($0) }
+            if !after.isEmpty {
+                Section("After all frames") {
+                    ForEach(after, id: \.self) { row($0, Formatters.ms(s.timings.total($0))) }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func row(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).foregroundColor(VeriColor.nickel)
+            Spacer()
+            Text(value).foregroundColor(VeriColor.textPrimary).monospacedDigit()
+        }
+        .font(.system(size: 13))
+    }
+}

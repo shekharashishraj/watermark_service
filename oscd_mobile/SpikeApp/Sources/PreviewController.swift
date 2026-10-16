@@ -4,22 +4,17 @@ import OSCDCore
 import RealityKit
 import UIKit
 
-/// Live Method A preview: ARKit supplies frames and LiDAR; PreviewWorker does the O-SCD work.
-/// Assets come from Documents/preview/: reference.ply (trained on the Mac) and before/ (the before-scan).
+/// Live view: ARKit supplies frames and LiDAR; PreviewWorker runs Method A against the before-scan.
 final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
     let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
-    @Published var status = "Press Start. The reference and the before-scan must be in Documents/preview."
+    @Published var status = "Press Start to compare what the camera sees with the before-scan."
     @Published var overlay: UIImage?
     @Published var reference: UIImage?
-    @Published var hud = ""
+    @Published var headline = ""
+    @Published var details = ""
     @Published var running = false
 
     private var worker: PreviewWorker?
-    private var sessionRunning = false
-
-    static var assets: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("preview")
-    }
 
     func startSession() {
         let config = ARWorldTrackingConfiguration()
@@ -31,18 +26,14 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
         }
         arView.session.delegate = self
         arView.session.run(config)
-        sessionRunning = true
     }
 
     func stopSession() {
-        stopPipeline()
+        stop()
         arView.session.pause()
-        sessionRunning = false
     }
 
-    func toggle() { running ? stopPipeline() : startPipeline() }
-
-    private func startPipeline() {
+    func start(before: ScanInfo) {
         let w = PreviewWorker()
         w.onStatus = { s in DispatchQueue.main.async { self.status = s } }
         w.onResult = { r in
@@ -51,15 +42,17 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
             DispatchQueue.main.async {
                 self.overlay = overlay
                 if let reference { self.reference = reference }
-                self.hud = r.line
+                self.headline = r.headline
+                self.details = r.details
             }
         }
         worker = w
         running = true
-        w.start(assets: Self.assets)
+        overlay = nil; reference = nil; headline = ""; details = ""
+        w.start(before: before)
     }
 
-    private func stopPipeline() {
+    func stop() {
         worker?.stop()
         worker = nil
         running = false
@@ -71,7 +64,7 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
         let working = CaptureController.working
         guard let factor = CameraImage.areaFactor(captureWidth: Int(res.width), captureHeight: Int(res.height),
                                                   workingWidth: working.width, workingHeight: working.height) else {
-            status = "Camera format \(Int(res.width))×\(Int(res.height)) is not supported."
+            status = "This camera format (\(Int(res.width))×\(Int(res.height))) is not supported."
             return
         }
         let K = frame.camera.intrinsics
@@ -79,20 +72,22 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
                                               captureWidth: Int(res.width), captureHeight: Int(res.height),
                                               workingWidth: working.width, workingHeight: working.height)
         let (depth, confidence) = CaptureController.copyDepth(sceneDepth)
-        worker.submit(LiveFrame(rgb: CaptureController.workingRGB(frame.capturedImage, factor: factor),
-                                depth: depth, confidence: confidence,
-                                depthWidth: CVPixelBufferGetWidth(sceneDepth.depthMap),
-                                depthHeight: CVPixelBufferGetHeight(sceneDepth.depthMap),
-                                intrinsics: intrinsics))
+        worker.submit(CameraFrame(rgb: CaptureController.workingRGB(frame.capturedImage, factor: factor),
+                                  depth: depth, confidence: confidence,
+                                  depthWidth: CVPixelBufferGetWidth(sceneDepth.depthMap),
+                                  depthHeight: CVPixelBufferGetHeight(sceneDepth.depthMap),
+                                  intrinsics: intrinsics))
     }
 
     /// Sensor-orientation RGBA → portrait UIImage.
     static func image(_ rgba: [UInt8], _ w: Int, _ h: Int) -> UIImage? {
-        let data = Data(rgba) as CFData
-        guard let provider = CGDataProvider(data: data),
-              let cg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
-                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
-                               provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { return nil }
-        return UIImage(cgImage: cg, scale: 1, orientation: .right)
+        cgImage(rgba, w, h).map { UIImage(cgImage: $0, scale: 1, orientation: .right) }
+    }
+
+    static func cgImage(_ rgba: [UInt8], _ w: Int, _ h: Int) -> CGImage? {
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 }

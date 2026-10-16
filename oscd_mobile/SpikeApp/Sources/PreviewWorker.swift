@@ -1,39 +1,24 @@
-import CoreML
 import Foundation
 import OSCDCore
-import OSCDFusion
-import simd
-
-/// One camera frame handed from ARKit to the preview pipeline.
-struct LiveFrame {
-    let rgb: [UInt8]                 // 480×360 interleaved RGB (sensor orientation)
-    let depth: [Float]
-    let confidence: [UInt8]
-    let depthWidth: Int
-    let depthHeight: Int
-    let intrinsics: Intrinsics       // working resolution
-}
 
 struct PreviewResult {
     let overlayRGBA: [UInt8]         // live frame with the change mask in red, judged area only
-    let renderRGBA: [UInt8]?         // the reference render at the O-SCD pose
+    let renderRGBA: [UInt8]?         // the before model rendered from where the camera is
     let width: Int
     let height: Int
-    let line: String                 // HUD line
+    let headline: String             // plain-language status
+    let details: String              // per-stage times, for "Show timings"
 }
 
-/// Runs the Method A preview on one dedicated thread (splatx sessions are single-thread):
-/// setup (models, anchors from the before-scan, reference renderer), then for each submitted frame
-/// XFeat → O-SCD pose → reference render → pixel + SAM2 cue → mask (cue > 1.0, no fusion).
+/// Live view: runs Method A on the newest camera frame, on one dedicated thread (splatx sessions are
+/// single-thread). Online fusion only, no refine: refine prunes the change model to a few hundred
+/// Gaussians that smear at viewpoints that were not fused.
 final class PreviewWorker {
-    static let disambiguationDepths: (Float, Float) = (0.1, 1.0)     // spec D11
-    static let changeThreshold: Float = 1.0
-
     var onStatus: ((String) -> Void)?
     var onResult: ((PreviewResult) -> Void)?
 
     private let lock = NSLock()
-    private var pending: LiveFrame?
+    private var pending: CameraFrame?
     private var processing = false
     private var stopRequested = false
     private var ready = false
@@ -45,15 +30,15 @@ final class PreviewWorker {
         return ready && !processing && pending == nil && !stopRequested
     }
 
-    func start(assets: URL) {
-        let thread = Thread { [weak self] in self?.run(assets: assets) }
+    func start(before: ScanInfo) {
+        let thread = Thread { [weak self] in self?.run(before: before) }
         thread.name = "oscd.preview"
         thread.stackSize = 16 << 20
         thread.qualityOfService = .userInitiated
         thread.start()
     }
 
-    func submit(_ frame: LiveFrame) {
+    func submit(_ frame: CameraFrame) {
         lock.lock(); pending = frame; lock.unlock()
         wake.signal()
     }
@@ -63,10 +48,9 @@ final class PreviewWorker {
         wake.signal()
     }
 
-    /// Documents/preview/preview-log.txt — status messages and one line per processed frame
-    /// (NSLog does not reach `devicectl --console`; pull this file instead).
+    /// Documents/preview-log.txt — status messages and one line per frame (NSLog does not reach
+    /// `devicectl --console`; pull this file instead).
     private var logHandle: FileHandle?
-    private var fusedFrames = 0
 
     private func log(_ s: String) {
         let line = "\(String(format: "%.3f", Date().timeIntervalSince1970)) \(s)\n"
@@ -78,45 +62,16 @@ final class PreviewWorker {
         onStatus?(s)
     }
 
-    private func run(assets: URL) {
-        let logURL = assets.appendingPathComponent("preview-log.txt")
+    private func run(before: ScanInfo) {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let logURL = docs.appendingPathComponent("preview-log.txt")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         logHandle = try? FileHandle(forWritingTo: logURL)
         defer { try? logHandle?.close() }
         do {
-            status("Loading models…")
-            guard let xURL = Bundle.main.url(forResource: "XFeat_480x352", withExtension: "mlmodelc"),
-                  let sURL = Bundle.main.url(forResource: "SAM2_1Tiny_1x1024", withExtension: "mlmodelc"),
-                  let kernelURL = Bundle.main.url(forResource: "SplatXKernelSrc", withExtension: nil) else {
-                throw PreviewError.message("The app is missing a model or the splatx kernel sources; rebuild it.")
-            }
-            let xfeat = try XFeatModel(compiledModelURL: xURL)
-            let sam = try SAM2Encoder(compiledModelURL: sURL)
-            let plyURL = assets.appendingPathComponent("reference.ply")
-            guard FileManager.default.fileExists(atPath: plyURL.path) else {
-                throw PreviewError.message("No reference model at Documents/preview/reference.ply. Copy it from the Mac first.")
-            }
-            let store = try SessionStore(open: assets.appendingPathComponent("before"))
-            guard let roi = store.manifest.roi else { throw PreviewError.message("The before-scan has no table region.") }
-
-            var views: [(pose: Pose, keypoints: DescribedKeypoints)] = []
-            for (i, r) in store.manifest.keyframes.enumerated() {
-                if i % 5 == 0 { status("Reading the before-scan… \(i)/\(store.manifest.keyframes.count)") }
-                let pose = Pose.fromARKitCameraToWorld(simd_float4x4(columnMajor: r.arkitCameraToWorld))
-                views.append((pose, try xfeat.detect(try store.rgb(.keyframes, id: r.id))))
-            }
-            status("Building O-SCD anchors…")
-            let anchors = AnchorBuilder.build(keyframes: views, intrinsics: store.manifest.intrinsics,
-                                              disambiguationDepths: Self.disambiguationDepths)
-            let estimator = PoseEstimator(anchors: anchors)
-            status("Opening the reference model (compiling splatx kernels on the phone)…")
-            let renderer = try SplatRenderer(plyPath: plyURL.path, kernelSourceDir: kernelURL.path)
-            status("Opening the O-SCD change model…")
-            let fusion = try ChangeFusion(plyPath: plyURL.path, kernelSourceDir: kernelURL.path,
-                                          referenceCentres: views.map { $0.pose.centre })
-            status(String(format: "Ready: %d anchors from %d keyframes. Point the phone at the table.", anchors.anchorCount, views.count))
+            let method = try MethodA(beforeScan: before.url, beforeLabel: before.label) { status($0) }
+            status("Ready. Point the phone at the table, about 30 cm away.")
             lock.lock(); ready = true; lock.unlock()
-
             while true {
                 wake.wait()
                 lock.lock()
@@ -124,87 +79,44 @@ final class PreviewWorker {
                 guard let frame = pending else { lock.unlock(); continue }
                 pending = nil; processing = true
                 lock.unlock()
-                let result = process(frame, xfeat: xfeat, sam: sam, estimator: estimator, renderer: renderer,
-                                     fusion: fusion, referenceK: anchors.intrinsics, roi: roi)
-                log(result.line)
+                let result = process(frame, method: method)
+                log(result.headline + " | " + result.details)
                 onResult?(result)
                 lock.lock(); processing = false; lock.unlock()
             }
             status("Stopped")
         } catch {
-            status("Preview failed: \(error.localizedDescription)")
+            status("Could not start: \(error.localizedDescription)")
         }
     }
 
-    private func ms(_ a: UInt64, _ b: UInt64) -> Double { Double(b - a) / 1e6 }
-
-    private func process(_ f: LiveFrame, xfeat: XFeatModel, sam: SAM2Encoder, estimator: PoseEstimator,
-                         renderer: SplatRenderer, fusion: ChangeFusion, referenceK: Intrinsics, roi: AABB) -> PreviewResult {
+    private func process(_ f: CameraFrame, method: MethodA) -> PreviewResult {
         let W = f.intrinsics.width, H = f.intrinsics.height, n = W * H
-        let now = { DispatchTime.now().uptimeNanoseconds }
-        let t0 = now()
         let plain = PreviewComposite.overlay(rgb8: f.rgb, changed: [Bool](repeating: false, count: n),
                                              valid: [Bool](repeating: true, count: n))
         do {
-            let live = FloatImage(rgb8: f.rgb, width: W, height: H)
-            // The live image's embedding does not depend on the pose: encode it on the Neural Engine
-            // while XFeat and pose estimation run, so only the render's embedding waits for the pose.
-            let liveEmb = LiveEmbedding()
-            let liveDone = DispatchGroup()
-            liveDone.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
-                let s = now()
-                liveEmb.result = Result { try sam.encode(live) }
-                liveEmb.ms = self.ms(s, now())
-                liveDone.leave()
-            }
-            defer { liveDone.wait() }
-            let kp = try xfeat.detect(live)
-            let t1 = now()
-            let est = estimator.estimate(kp)
-            let t2 = now()
-            guard est.accepted, let pose = est.pose else {
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            let out = try method.process(f)
+            let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            let details = out.timings.map { String(format: "%@ %.0f", $0.0, $0.1) }.joined(separator: " · ")
+                + String(format: " · total %.0f ms", totalMs)
+            guard out.pose != nil, let ren = out.render else {
                 return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
-                                     line: String(format: "pose rejected (%@): %d kpts, %d corr | xfeat %.0f · pose %.0f ms",
-                                                  est.failReason ?? "?", kp.count, est.nCorrespondences, ms(t0, t1), ms(t1, t2)))
+                                     headline: "Can't place the camera: \(out.rejection ?? "no match"). Stay over the table, about as far as you scanned.",
+                                     details: details)
             }
-            let ren = try renderer.render(pose: pose, intrinsics: referenceK)
-            let t3 = now()
-            let valid = PreviewValidity.mask(depth: f.depth, confidence: f.confidence, depthWidth: f.depthWidth,
-                                             depthHeight: f.depthHeight, intrinsics: f.intrinsics, pose: pose, roi: roi, render: ren)
-            // Live demo: online fusion only (no --refine), so the model stays constrained around the
-            // views being fused (refine prunes it down to change Gaussians that smear at novel views).
-            let embRender = try sam.encode(ren)
-            liveDone.wait()
-            let embLive = try liveEmb.result!.get()
-            let t4 = now()
-            let cues = CuesA.compute(live: live, render: ren, embRender: embRender, embLive: embLive, valid: valid)
-            try fusion.addFrame(pose: pose, intrinsics: referenceK, cue: cues.combined, valid: valid)
-            try fusion.stepFrame()
-            fusedFrames += 1
-            let t5 = now()
-            // O-SCD's mask: the change model rendered at this pose, value > 0.5 (oscd.py:258-263).
-            let changed = try fusion.changeMap(pose: pose, intrinsics: referenceK).map { $0 > 0.5 }
-            let t6 = now()
-            let judged = valid.filter { $0 }.count
-            let flagged = zip(changed, valid).filter { $0 && $1 }.count
+            let judged = out.valid.filter { $0 }.count
+            let flagged = zip(out.changed, out.valid).filter { $0 && $1 }.count
             var renderRGBA = [UInt8](repeating: 255, count: n * 4)
             for i in 0..<n { for c in 0..<3 { renderRGBA[i * 4 + c] = UInt8(min(255, ren.data[c * n + i] * 255)) } }
-            return PreviewResult(
-                overlayRGBA: PreviewComposite.overlay(rgb8: f.rgb, changed: changed, valid: valid), renderRGBA: renderRGBA,
-                width: W, height: H,
-                line: String(format: "pose ✓ %d pts | changed %.0f%% of %.0f%% judged | %@ %d frames, %d steps, %d Gaussians | xfeat %.0f · pose %.0f · render %.0f · sam2 %.0f (live %.0f alongside) · fusion %.0f · mask %.0f · total %.0f ms",
-                             est.nBAInlierComponents / 2, 100 * Double(flagged) / Double(max(judged, 1)), 100 * Double(judged) / Double(n),
-                             "fused", fusedFrames, fusion.totalSteps, fusion.count,
-                             ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), liveEmb.ms, ms(t4, t5), ms(t5, t6), ms(t0, t6)))
+            let headline = String(format: "Camera placed · %.0f%% of the table in view changed · %d views combined",
+                                  100 * Double(flagged) / Double(max(judged, 1)), method.fusedFrames)
+            return PreviewResult(overlayRGBA: PreviewComposite.overlay(rgb8: f.rgb, changed: out.changed, valid: out.valid),
+                                 renderRGBA: renderRGBA, width: W, height: H, headline: headline,
+                                 details: details + String(format: " · %d anchor points, %d Gaussians", out.anchorPoints, method.gaussians))
         } catch {
-            return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H, line: "frame failed: \(error.localizedDescription)")
+            return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
+                                 headline: "This frame failed: \(error.localizedDescription)", details: "")
         }
     }
-}
-
-/// The live image's embedding, filled in on a background queue while the pose is estimated.
-private final class LiveEmbedding {
-    var result: Result<[Float], Error>?
-    var ms = 0.0
 }

@@ -33,7 +33,7 @@ struct CaptureView: View {
                     .font(.callout)
                     .padding(10)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                Text("Keyframes: \(controller.keyframeCount)").monospacedDigit()
+                Text("Frames: \(controller.keyframeCount)").monospacedDigit()
                 Button(controller.recording ? "Stop" : "Record") { controller.toggleRecording() }
                     .buttonStyle(.borderedProminent)
                     .tint(controller.recording ? .red : .accentColor)

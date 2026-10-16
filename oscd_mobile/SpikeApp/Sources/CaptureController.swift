@@ -58,14 +58,14 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         let c = hit.worldTransform.columns.3
         let p = SIMD3<Float>(c.x, c.y, c.z)
         roi = AABB(min: p - SIMD3(0.4, 0.02, 0.4), max: p + SIMD3(0.4, 0.35, 0.4))      // ARKit world is y-up
-        status = "Region placed. Press Record and sweep around the table."
+        status = "Table region placed. Press Record and sweep slowly around it."
     }
 
     func toggleRecording() {
         if recording {
             recording = false
             store = nil
-            status = "Saved \(keyframeCount) keyframes"
+            status = "Saved \(keyframeCount) frames. The scan is in the Scans tab."
             return
         }
         guard roi != nil else { status = "Tap the table to place the scan region first"; return }
@@ -73,7 +73,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         selector = KeyframeSelector()
         keyframeCount = 0
         recording = true
-        status = "Recording. Sweep slowly around the table."
+        status = "Recording. Sweep slowly around the table, about 30 cm away, phone upright."
     }
 
     /// Exposure, white balance and focus stay locked for the whole session (iOS 16+).
@@ -120,7 +120,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             do {
                 try store.append(.keyframes, record: record, rgb: rgb, depth: depth, confidence: confidence)
             } catch {
-                DispatchQueue.main.async { self.status = "Writing keyframe \(record.id) failed: \(error.localizedDescription)" }
+                DispatchQueue.main.async { self.status = "Saving frame \(record.id) failed: \(error.localizedDescription)" }
             }
         }
     }

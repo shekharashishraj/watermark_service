@@ -7,21 +7,29 @@ struct ARViewHost: UIViewRepresentable {
     func updateUIView(_ uiView: ARView, context: Context) {}
 }
 
-/// Live camera behind; on top, the latest processed frame with O-SCD's per-frame change mask in red
-/// (dimmed = outside the judged table area) and the reference render at the O-SCD pose.
+/// Live camera behind; on top, the latest processed frame with the changes in red (dimmed = not judged)
+/// and the before-scan's 3D model rendered from where the camera is.
 struct PreviewView: View {
+    @EnvironmentObject private var library: ScanLibrary
     @ObservedObject var controller: PreviewController
+    @State private var showTimings = false
 
     var body: some View {
         ZStack(alignment: .top) {
             ARViewHost(arView: controller.arView).ignoresSafeArea()
             VStack(spacing: 8) {
                 HStack(alignment: .top, spacing: 8) {
-                    panel(controller.overlay, title: "Changes (O-SCD fusion)")
-                    panel(controller.reference, title: "Reference at O-SCD pose")
+                    panel(controller.overlay, title: "Changes")
+                    panel(controller.reference, title: "\(library.before?.label ?? "Before-scan") from here")
                 }
-                if !controller.hud.isEmpty {
-                    Text(controller.hud)
+                if !controller.headline.isEmpty {
+                    Text(controller.headline)
+                        .font(.footnote)
+                        .padding(8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                if showTimings, !controller.details.isEmpty {
+                    Text(controller.details)
                         .font(.caption2.monospaced())
                         .padding(6)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
@@ -32,15 +40,24 @@ struct PreviewView: View {
                     .multilineTextAlignment(.center)
                     .padding(10)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                Button(controller.running ? "Stop" : "Start") { controller.toggle() }
+                HStack(spacing: 12) {
+                    Button(controller.running ? "Stop" : "Start") {
+                        if controller.running { controller.stop() } else if let before = library.before { controller.start(before: before) }
+                    }
                     .buttonStyle(.borderedProminent)
-                    .tint(controller.running ? .red : .accentColor)
-                    .padding(.bottom, 24)
+                    .tint(controller.running ? .red : VeriColor.primary)
+                    .disabled(!controller.running && library.before == nil)
+                    Toggle("Timings", isOn: $showTimings).toggleStyle(.button).buttonStyle(.bordered)
+                }
+                .padding(.bottom, 24)
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
         }
-        .onAppear { controller.startSession() }
+        .onAppear {
+            controller.startSession()
+            if library.before == nil { controller.status = "No scan has a 3D model yet. See Settings › Building a scan's 3D model." }
+        }
         .onDisappear { controller.stopSession() }
     }
 

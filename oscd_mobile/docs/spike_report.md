@@ -135,7 +135,12 @@ Still to verify against the real O-SCD on Sol: everything above, at fp16 CUDA on
 - Live demo: **online O-SCD fusion, no Refine** (Refine stays in `OSCDFusion` for an offline final-result view).
 - SAM2: **batch-1 model** (`SAM2_1Tiny_1x1024`), pinned to the Neural Engine. The live image is encoded while the pose is estimated.
 - Next speed-ups, biggest first:
-  - restrict fusion to the table region, ≈ 680 → 100–200 ms (would be deviation D13);
-  - keep the fusion state on the GPU;
+  - ~~restrict fusion to the table region~~: dropped. The export already keeps only LiDAR points inside the table box (`tools/session_to_colmap.py:68`), so 98.3 % of the reference's Gaussians (93,701 of 95,360) are inside it already; cropping would save about 2 %.
+  - fuse on a background thread and draw each mask from the latest model (exact O-SCD, mask one frame behind);
+  - keep the fusion state on the GPU (splatx `resident` mode), after profiling one fusion step;
   - estimate the next frame's pose while the current frame fuses.
+- Demo app (Scans / Capture / Detect / Settings): Detect runs Method A over a recorded after-scan against a before-scan with a 3D model. First on-phone run, `15-45-15Z` → `15-45-52Z`:
+  - camera placed in 28 of 47 frames; 16.8 % of the judged table area changed;
+  - 30 s in total: setup 7.3 s, then 0.66 s per placed frame (median);
+  - fusion took 264 ms per frame, against about 680 ms in the live view, which also runs ARKit.
 - Go / no-go for Phase 2: pending the human steps above.

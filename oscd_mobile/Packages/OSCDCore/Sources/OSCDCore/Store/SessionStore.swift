@@ -24,6 +24,8 @@ public struct FrameRecord: Codable, Equatable, Sendable {
 
 public struct SessionManifest: Codable, Equatable, Sendable {
     public var version = 1
+    /// Shown in the scans list; nil means "Scan N" by capture order.
+    public var name: String?
     public var deviceModel: String
     public var createdAt: Date
     public var captureWidth: Int

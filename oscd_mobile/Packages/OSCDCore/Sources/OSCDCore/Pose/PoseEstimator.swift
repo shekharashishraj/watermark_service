@@ -10,6 +10,15 @@ public struct PoseEstimate: Sendable {
     /// O-SCD n_ba_inliers: mask components, 2 per point.
     public var nBAInlierComponents = 0
     public var failReason: String?
+    public var timings = PoseTimings()
+}
+
+/// Wall time of each pose step, in ms (0 for a step that did not run).
+public struct PoseTimings: Sendable, Equatable {
+    public var retrievalMs = 0.0
+    public var matchingMs = 0.0
+    public var pnpMs = 0.0
+    public var bundleAdjustMs = 0.0
 }
 
 /// O-SCD PoseInitializer.init_inference_pose + get_reference_keyframes, with P1 semantics:
@@ -30,6 +39,12 @@ public final class PoseEstimator {
     public func estimate(_ frame: DescribedKeypoints) -> PoseEstimate {
         var est = PoseEstimate()
         let kfs = anchors.keyframes
+        var mark = DispatchTime.now().uptimeNanoseconds
+        func lap() -> Double {
+            let now = DispatchTime.now().uptimeNanoseconds
+            defer { mark = now }
+            return Double(now - mark) / 1e6
+        }
 
         // 1. Retrieval: the keyframes with the most mutual-NN matches (no geometric check).
         var counts = [Int](repeating: 0, count: kfs.count)
@@ -37,6 +52,7 @@ public final class PoseEstimator {
             DispatchQueue.concurrentPerform(iterations: kfs.count) { k in c[k] = Matcher.countMutual(kfs[k].keypoints, frame) }
         }
         est.retrieved = Array(counts.indices.sorted { counts[$0] != counts[$1] ? counts[$0] > counts[$1] : $0 < $1 }.prefix(numReference))
+        est.timings.retrievalMs = lap()
         guard let top = est.retrieved.first else { est.failReason = "no_reference"; return est }
 
         // 2. 2D–3D correspondences through each retrieved keyframe's anchors.
@@ -55,6 +71,7 @@ public final class PoseEstimator {
             let sel = rng.subset(numPtsMiniBA, of: uv.count)
             uv = sel.map { uv[$0] }; xyz = sel.map { xyz[$0] }; conf = sel.map { conf[$0] }
         }
+        est.timings.matchingMs = lap()
 
         // 3. P4P-RANSAC started from the top-retrieved keyframe's pose.
         let K = anchors.intrinsics
@@ -65,6 +82,7 @@ public final class PoseEstimator {
             est.failReason = "too_few_correspondences"
             return est
         }
+        est.timings.pnpMs = lap()
         var uvIn: [SIMD2<Double>] = [], xyzIn: [SIMD3<Double>] = []
         for k in 0..<uv.count where ransac.inliers[k] { uvIn.append(uv[k]); xyzIn.append(xyz[k]) }
         est.nPnPInliers = uvIn.count
@@ -80,6 +98,7 @@ public final class PoseEstimator {
         }
         let ba = MiniBA.solve(r6: ransac.r6, t: ransac.t, f: f, centre: c, xyz: xyzIn, uv: uvIn, config: .poseRefine)
         est.nBAInlierComponents = ba.inlierComponents
+        est.timings.bundleAdjustMs = lap()
 
         // 5. O-SCD gate: more than min_num_inliers residual components (> 50 points).
         if ba.inlierComponents > minNumInliers {

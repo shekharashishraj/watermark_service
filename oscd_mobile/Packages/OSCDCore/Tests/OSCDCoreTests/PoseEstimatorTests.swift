@@ -32,6 +32,11 @@ final class PoseEstimatorTests: XCTestCase {
         XCTAssertFalse(r.accepted)
         XCTAssertNil(r.pose)
         XCTAssertEqual(r.failReason, "too_few_correspondences")
+        // Retrieval and matching ran (and are timed); PnP and bundle adjustment never started.
+        XCTAssertGreaterThan(r.timings.retrievalMs, 0)
+        XCTAssertGreaterThan(r.timings.matchingMs, 0)
+        XCTAssertEqual(r.timings.pnpMs, 0)
+        XCTAssertEqual(r.timings.bundleAdjustMs, 0)
     }
 
     /// End to end against O-SCD's own init_inference_pose (its own randomness, so poses are

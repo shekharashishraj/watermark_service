@@ -81,7 +81,7 @@ Compared with the Oct 14 live preview (≈ 1,209 ms per placed frame, fusion ≈
 | Total per (rejected) frame | 281 ms |
 | 2D–3D correspondences | 117 (min 38, max 227) |
 
-On Oct 14, when the live preview tracked, accepted frames had 300+ correspondences. For the single frame placed today, the later stages were: SAM2 render 172 ms, fusion 320 ms, total 844 ms. ARKit reported `insufficientFeatures` near the end of both live sessions.
+**What "placed" means:** O-SCD's gate (`--min_num_inliers 100`) is applied after the final bundle adjustment. It requires more than 100 residual components, i.e. **more than 50 matched points that agree on one camera position**. The number of correspondences is only the pool the agreeing points come from; there is no minimum on it. Today's single placed frame had **52 agreeing points**. On Oct 14, placed frames had 51–352 agreeing points, and some frames with 226–355 correspondences were still rejected. For the single frame placed today, the later stages were: SAM2 render 172 ms, fusion 320 ms, total 844 ms. ARKit reported `insufficientFeatures` near the end of both live sessions.
 
 ## Failures and causes
 
@@ -100,7 +100,7 @@ On Oct 14, when the live preview tracked, accepted frames had 300+ correspondenc
 ## Why the old scan cannot be reused here
 
 The re-laid sheet breaks the comparison in two ways:
-1. **The camera can't be lined up.** O-SCD places the camera from the static background, and here the background moved. Matches dropped from 300+ to a median of 117, and they don't agree on one camera position.
+1. **The camera can't be lined up.** O-SCD places the camera from the static background, and here the background moved. Of a median of 117 matches per frame, fewer than 51 agreed on one camera position in 207 of 208 frames: much of the sheet's pattern now sits at different 3D spots, so many matches point to the wrong place.
 2. **Even if it could be lined up, the new folds would be flagged.** They are a real change in shape, so they would be flagged along with the moved objects.
 
 O-SCD's benchmark scenes have rigid backgrounds for this reason.

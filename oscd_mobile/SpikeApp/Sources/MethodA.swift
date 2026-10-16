@@ -154,9 +154,9 @@ final class MethodA {
         out.anchorPoints = est.nBAInlierComponents / 2
         out.matches = est.nCorrespondences
         guard est.accepted, let pose = est.pose else {
-            out.rejection = est.nCorrespondences < 150
-                ? "only \(est.nCorrespondences) points match \(beforeLabel)"
-                : "\(est.nCorrespondences) points match \(beforeLabel), but they don't agree on where the camera is"
+            // O-SCD's gate: more than min_num_inliers (100) residual components after mini-BA, i.e. more
+            // than 50 matched points that agree on one camera position.
+            out.rejection = "\(est.nBAInlierComponents / 2) of \(est.nCorrespondences) matches with \(beforeLabel) agree on one camera position; more than 50 are needed"
             return out
         }
         out.pose = pose

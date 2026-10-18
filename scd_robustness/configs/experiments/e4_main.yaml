@@ -1,7 +1,7 @@
 # E4 — main robustness sweep (H1). O-SCD runs with --refine, so each run yields BOTH the online
 # and the refined masks (used again in E7 / H4).
-# !! The levels below are the plan's starting grid. Replace them with the grid frozen after the
-# !! E3 pilot and commit PREREGISTRATION.md BEFORE running this experiment.
+# Grid frozen on 2026-10-18 after the E3 pilot (Decision G2); see docs/PREREGISTRATION.md.
+# Changing a level after this point makes the affected results exploratory.
 name: e4_main
 paths: ../paths.yaml
 perturbations: ../perturbations.yaml
@@ -11,16 +11,16 @@ methods:
     scenes: all
     pairs: [Instance_1, Instance_2]
     seeds: [0]
-  mv3dcd:                                # pose protocol A (oracle COLMAP poses), 5-scene subset
-    scenes: [Cantina, Printing_area, Meeting_room, Garden, Porch]
+  mv3dcd:                                # pose protocol A (oracle COLMAP poses); all 10 scenes so
+    scenes: all                          # its primary tests have power (PREREGISTRATION.md §3)
     pairs: [Instance_1, Instance_2]
     seeds: [0]
 
 sweep:
   identity: [0]                          # severity-0 baseline with the same re-encode
   blur: [16, 32, 64, 128]
-  exposure: [-2, -1, 1, 2]
-  views: [0.6, 0.4, 0.2]                 # 25 -> 15 / 10 / 5 post-change views
+  exposure: [-4, -2, 1, 2]
+  views: [0.6, 0.4, 0.2, 0.12]           # 25 -> 15 / 10 / 5 / 3 post-change views
   # tier 2 (uncomment if time allows):
   # gain_field: [0.25, 0.5, 0.75]
   # shadow: [0.3, 0.6, 0.9]

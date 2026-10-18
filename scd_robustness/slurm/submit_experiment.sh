@@ -10,6 +10,7 @@
 #   SCD_MAX_PARALLEL  max simultaneously running tasks per array (default 16)
 #   SCD_VARIANT_CHUNK variants per CPU task (default 10)
 #   SCD_RUN_CHUNK     runs per GPU task (default 1; raise it to amortise start-up, and raise -t too)
+#   SCD_REFCACHE_CHUNK MV3DCD reference caches per GPU task (default 1; raise -t too)
 #   DRY=1             print the sbatch commands instead of submitting
 set -eo pipefail
 [ -n "$1" ] || { echo "usage: $0 <experiment.yaml>"; exit 2; }
@@ -23,6 +24,7 @@ M="$SCD_ROOT/manifests/$NAME"
 MAXP="${SCD_MAX_PARALLEL:-16}"
 VCHUNK="${SCD_VARIANT_CHUNK:-10}"
 RCHUNK="${SCD_RUN_CHUNK:-1}"
+FCHUNK="${SCD_REFCACHE_CHUNK:-1}"
 LOG="$SCD_ROOT/logs/slurm"
 
 lines() { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
@@ -47,7 +49,7 @@ echo "[scd] $NAME: $(lines "$M/variants.jsonl") variants, $(lines "$M/runs_oscd.
 
 JV=$(array_job "$M/variants.jsonl" "$VCHUNK" "" variants.sbatch "scd-var-$NAME")
 DEP=${JV:+--dependency=afterok:$JV}
-JR=$(array_job "$M/runs_mv3dcd_refcache.jsonl" 1 "$DEP" mv3dcd_array.sbatch "scd-ref-$NAME")
+JR=$(array_job "$M/runs_mv3dcd_refcache.jsonl" "$FCHUNK" "$DEP" mv3dcd_array.sbatch "scd-ref-$NAME")
 DEP_MV=${JR:+--dependency=afterok:${JV:+$JV:}$JR}
 DEP_MV=${DEP_MV:-$DEP}
 JO=$(array_job "$M/runs_oscd.jsonl" "$RCHUNK" "$DEP" oscd_array.sbatch "scd-oscd-$NAME")

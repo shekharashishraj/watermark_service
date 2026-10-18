@@ -87,6 +87,8 @@ Order:
 
 Useful knobs:
 - `SCD_RUN_CHUNK=4` runs 4 lines per GPU task, which amortises O-SCD start-up. Raise `-t` with it.
+- `SCD_REFCACHE_CHUNK=20` builds 20 MV3DCD reference caches per GPU task (default 1). Raise `-t` with it.
+- Every array task counts as a job against QOS limits. Under a QOS that caps submitted jobs (the `class` QOS allows 10), raise the chunk sizes until the task total fits; `DRY=1` shows each array's size. For example, e1 fits in 8 tasks with `SCD_VARIANT_CHUNK=50 SCD_REFCACHE_CHUNK=20 SCD_RUN_CHUNK=20` and `-t 12:00:00`.
 - `SCD_MAX_PARALLEL` limits concurrently running tasks per array (default 16).
 - `DRY=1` prints the `sbatch` commands without submitting.
 

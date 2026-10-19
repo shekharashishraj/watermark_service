@@ -6,6 +6,7 @@ import SwiftUI
 struct PreviewView: View {
     @EnvironmentObject private var library: ScanLibrary
     @ObservedObject var controller: PreviewController
+    var autoStart = false
     @State private var showTimings = false
     @State private var appearToken = 0
 
@@ -53,6 +54,7 @@ struct PreviewView: View {
         .onAppear {
             appearToken += 1
             controller.startSession()
+            if autoStart, !controller.running, let before = library.before { controller.start(before: before) }
             if library.before == nil { controller.status = "No scan has a 3D model yet. See Settings › Building a scan's 3D model." }
         }
         .onDisappear { controller.stopSession() }

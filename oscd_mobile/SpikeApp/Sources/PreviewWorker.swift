@@ -99,7 +99,7 @@ final class PreviewWorker {
                                              valid: [Bool](repeating: true, count: n))
         do {
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let out = try method.process(f) { out, fused in
+            let out = try method.process(f, fused: { out, fused in
                 // On the fusion thread, after this frame has been fused; `out` is this frame's result.
                 let judged = out.valid.filter { $0 }.count
                 let flagged = zip(fused.changed, out.valid).filter { $0 && $1 }.count
@@ -118,7 +118,7 @@ final class PreviewWorker {
                     headline: String(format: "Camera placed · %.0f%% of the table in view changed · %d views combined",
                                      100 * Double(flagged) / Double(max(judged, 1)), fused.fusedFrames),
                     details: details))
-            }
+            })
             if out.pose == nil {
                 deliver(PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
                                       headline: "Can't line this view up with \(method.beforeLabel): \(out.rejection ?? "no match"). Point at the same table from about as far as that scan.",

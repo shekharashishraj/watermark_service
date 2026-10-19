@@ -36,6 +36,7 @@ struct RootView: View {
         : UserDefaults.standard.string(forKey: "tab") == "capture" ? .capture : .scans     // `-tab capture` for checks
     @State private var showBuild = false
     @State private var viewScan: ScanInfo?
+    @State private var showLive = false
 
     var body: some View {
         TabView(selection: $tab) {
@@ -59,6 +60,8 @@ struct RootView: View {
             library.refresh()
             AppLog.write("app: launched, camera=\(AppLog.cameraAuthorization())")
             // `-buildReference <scan folder>` builds that scan's 3D model at launch (a check without tapping).
+            // `-live YES` opens the Live view and starts it with the current before-scan (checks without tapping).
+            showLive = UserDefaults.standard.bool(forKey: "live")
             // `-viewModel <scan folder>` opens that scan's 3D model viewer at launch.
             if let id = UserDefaults.standard.string(forKey: "viewModel") {
                 viewScan = library.scans.first { $0.id == id && $0.hasReference }
@@ -73,6 +76,7 @@ struct RootView: View {
             BuildSheet(builder: builder) { showBuild = false }
         }
         .fullScreenCover(item: $viewScan) { scan in ModelViewerScreen(scan: scan) }
+        .fullScreenCover(isPresented: $showLive) { PreviewView(controller: preview, autoStart: true) }
         .onChange(of: tab) { _, t in AppLog.write("app: tab \(t)") }
     }
 }

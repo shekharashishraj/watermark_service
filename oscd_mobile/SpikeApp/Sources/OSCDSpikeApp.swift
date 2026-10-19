@@ -7,11 +7,13 @@ struct OSCDSpikeApp: App {
     @StateObject private var bench = BenchmarkRunner()
     @StateObject private var preview = PreviewController()
     @StateObject private var runner = DetectionRunner()
+    @StateObject private var builder = ReferenceBuilder()
 
     var body: some Scene {
         WindowGroup {
             RootView(capture: capture, bench: bench, preview: preview, runner: runner)
                 .environmentObject(library)
+                .environmentObject(builder)
                 .preferredColorScheme(.light)        // the Romulus look is light-only
         }
     }
@@ -22,6 +24,7 @@ struct RootView: View {
     enum Tab: Hashable { case scans, capture, detect, settings }
 
     @EnvironmentObject private var library: ScanLibrary
+    @EnvironmentObject private var builder: ReferenceBuilder
     @ObservedObject var capture: CaptureController
     @ObservedObject var bench: BenchmarkRunner
     @ObservedObject var preview: PreviewController
@@ -29,6 +32,7 @@ struct RootView: View {
     // Launch arguments `-detectBefore <scan folder> -detectAfter <scan folder>` open Detect and run that
     // pair (devicectl ... process launch ... -- -detectBefore X -detectAfter Y): a rehearsal without tapping.
     @State private var tab: Tab = UserDefaults.standard.string(forKey: "detectAfter") == nil ? .scans : .detect
+    @State private var showBuild = false
 
     var body: some View {
         TabView(selection: $tab) {
@@ -48,7 +52,19 @@ struct RootView: View {
                 .tag(Tab.settings)
         }
         .tint(VeriColor.primary)
-        .onAppear { library.refresh(); AppLog.write("app: launched, camera=\(AppLog.cameraAuthorization())") }
+        .onAppear {
+            library.refresh()
+            AppLog.write("app: launched, camera=\(AppLog.cameraAuthorization())")
+            // `-buildReference <scan folder>` builds that scan's 3D model at launch (a check without tapping).
+            if let id = UserDefaults.standard.string(forKey: "buildReference"), !builder.running,
+               let scan = library.scans.first(where: { $0.id == id }) {
+                builder.start(scan: scan)
+                showBuild = true
+            }
+        }
+        .fullScreenCover(isPresented: $showBuild, onDismiss: { library.refresh() }) {
+            BuildSheet(builder: builder) { showBuild = false }
+        }
         .onChange(of: tab) { _, t in AppLog.write("app: tab \(t)") }
     }
 }

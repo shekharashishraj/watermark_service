@@ -86,6 +86,21 @@ final class FusionTests: XCTestCase {
         XCTAssertEqual(map[(TestPLY.camera.height / 2) * TestPLY.camera.width + TestPLY.camera.width / 2], 0.5, accuracy: 0.03)
     }
 
+    // MARK: Expected depth of the reference (Method B, spec §8.1)
+
+    func testExpectedDepthOfThePlaneIsItsDistanceAndNaNWhereUncovered() throws {
+        let K = TestPLY.camera
+        let d = try ReferenceDepth(plyPath: try TestPLY.plane().path)
+        let centre = (K.height / 2) * K.width + K.width / 2
+        XCTAssertEqual(try d.expectedDepth(pose: .identity, intrinsics: K)[centre], 2, accuracy: 0.01)
+        // Moved 0.5 m towards the plane: world→camera t = (0, 0, −0.5).
+        let closer = try d.expectedDepth(pose: Pose(R: matrix_identity_float3x3, t: SIMD3(0, 0, -0.5)), intrinsics: K)
+        XCTAssertEqual(closer[centre], 1.5, accuracy: 0.01)
+        // Shifted 2 m sideways the plane is out of view: no coverage, so no depth.
+        let away = try d.expectedDepth(pose: Pose(R: matrix_identity_float3x3, t: SIMD3(-2, 0, 0)), intrinsics: K)
+        XCTAssertTrue(away[centre].isNaN)
+    }
+
     // MARK: End to end — the change model learns where several views agree
 
     func testFusionLightsUpTheRegionAllViewsMarkAsChanged() throws {

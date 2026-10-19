@@ -1,17 +1,17 @@
-From 768614c0fbf860478803aa2ce166a65b4c517227 Mon Sep 17 00:00:00 2001
+From 96d9215d7ebaffc00bcd0c712365ea69e63956d1 Mon Sep 17 00:00:00 2001
 From: oscd <oscd@local>
 Date: Wed, 14 Oct 2026 10:17:06 -0700
 Subject: [PATCH] oscd_mobile: O-SCD change fusion (custom-loss backward, torch
  Adam, ADC)
 
 ---
- Sources/SplatXCore/OscdFusion.cpp             | 319 ++++++++++++++++++
+ Sources/SplatXCore/OscdFusion.cpp             | 352 ++++++++++++++++++
  Sources/SplatXCore/Trainer.cpp                |  63 ++++
- .../SplatXCore/include/splatx/OscdFusion.h    | 101 ++++++
+ .../SplatXCore/include/splatx/OscdFusion.h    | 115 ++++++
  Sources/SplatXCore/include/splatx/Trainer.h   |  23 ++
- Sources/SplatXTrainC/OscdFusionC.cpp          | 159 +++++++++
- Sources/SplatXTrainC/include/oscd_fusion_c.h  |  45 +++
- 6 files changed, 710 insertions(+)
+ Sources/SplatXTrainC/OscdFusionC.cpp          | 193 ++++++++++
+ Sources/SplatXTrainC/include/oscd_fusion_c.h  |  53 +++
+ 6 files changed, 799 insertions(+)
  create mode 100644 Sources/SplatXCore/OscdFusion.cpp
  create mode 100644 Sources/SplatXCore/include/splatx/OscdFusion.h
  create mode 100644 Sources/SplatXTrainC/OscdFusionC.cpp
@@ -19,15 +19,16 @@ Subject: [PATCH] oscd_mobile: O-SCD change fusion (custom-loss backward, torch
 
 diff --git a/Sources/SplatXCore/OscdFusion.cpp b/Sources/SplatXCore/OscdFusion.cpp
 new file mode 100644
-index 0000000..d00e583
+index 0000000..f1cc801
 --- /dev/null
 +++ b/Sources/SplatXCore/OscdFusion.cpp
-@@ -0,0 +1,319 @@
+@@ -0,0 +1,352 @@
 +// oscd_mobile patch — O-SCD change fusion on splatx. See include/splatx/OscdFusion.h.
 +#include "splatx/OscdFusion.h"
 +
 +#include <algorithm>
 +#include <cmath>
++#include <limits>
 +#include <stdexcept>
 +
 +namespace splatx::oscd {
@@ -341,6 +342,38 @@ index 0000000..d00e583
 +    std::fill(v_op_.begin(), v_op_.end(), 0.0f);
 +}
 +
++DepthRenderer::DepthRenderer(KernelBackend& backend, SplatCloud reference) {
++    reference.shN.clear();
++    reference.sh_degree = 0;
++    means_ = reference.means;
++    TrainConfig tc;
++    tc.resident = false;      // colours are rewritten on the host for every camera
++    tc.antialiased = false;
++    trainer_ = std::make_unique<Trainer>(backend, std::move(reference), tc);
++}
++
++std::vector<float> DepthRenderer::expected_depth(const TrainingCamera& cam, float min_alpha) {
++    constexpr float kC0 = 0.28209479177387814f;   // SH degree-0 basis: colour = C0·sh0 + 0.5
++    SplatCloud& c = trainer_->mutable_cloud();
++    const size_t N = means_.size() / 3;
++    const float* V = cam.viewmat;                  // row-major world→camera
++    for (size_t i = 0; i < N; i++) {
++        const float x = means_[i * 3], y = means_[i * 3 + 1], z = means_[i * 3 + 2];
++        const float zc = V[8] * x + V[9] * y + V[10] * z + V[11];
++        c.sh0[i * 3 + 0] = (zc - 0.5f) / kC0;      // channel 0 → Σ wᵢzᵢ
++        c.sh0[i * 3 + 1] = (1.0f - 0.5f) / kC0;    // channel 1 → Σ wᵢ
++        c.sh0[i * 3 + 2] = (0.0f - 0.5f) / kC0;    // channel 2 → 0
++    }
++    const std::vector<float> r = trainer_->render(cam);
++    const size_t n = static_cast<size_t>(cam.width) * cam.height;
++    std::vector<float> out(n);
++    for (size_t p = 0; p < n; p++) {
++        const float w = r[p * 3 + 1];
++        out[p] = w >= min_alpha ? r[p * 3] / w : std::numeric_limits<float>::quiet_NaN();
++    }
++    return out;
++}
++
 +} // namespace splatx::oscd
 diff --git a/Sources/SplatXCore/Trainer.cpp b/Sources/SplatXCore/Trainer.cpp
 index cb9ebf6..411281d 100644
@@ -418,10 +451,10 @@ index cb9ebf6..411281d 100644
          // Resident forward — the same kernels and activation path as the forward in step() (so a
 diff --git a/Sources/SplatXCore/include/splatx/OscdFusion.h b/Sources/SplatXCore/include/splatx/OscdFusion.h
 new file mode 100644
-index 0000000..23cc53b
+index 0000000..fe4ade0
 --- /dev/null
 +++ b/Sources/SplatXCore/include/splatx/OscdFusion.h
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,115 @@
 +// oscd_mobile patch — O-SCD change fusion (Changes in Real Time, CVPR 2026; code @3abfeaa) on splatx.
 +// R_change is a copy of the reference Gaussians with f_dc = 0, rendered at SH degree 0; colour,
 +// opacity, scale and rotation are optimised with torch.optim.Adam semantics against O-SCD's
@@ -522,6 +555,20 @@ index 0000000..23cc53b
 +    std::mt19937 rng_;
 +};
 +
++// Expected depth of the reference (Method B depth cue, spec §8.1): Σ wᵢzᵢ / Σ wᵢ, zᵢ the camera-space
++// depth of Gaussian i's centre and wᵢ its alpha-compositing weight. One render with channel 0 = zᵢ and
++// channel 1 = 1 (splatx clamps colours only below 0) gives both sums. Single-thread use only.
++class DepthRenderer {
++public:
++    DepthRenderer(KernelBackend& backend, SplatCloud reference);
++    // [H·W] metres; NaN where Σ wᵢ < min_alpha (the reference does not cover the pixel).
++    std::vector<float> expected_depth(const TrainingCamera& cam, float min_alpha = 0.5f);
++
++private:
++    std::unique_ptr<Trainer> trainer_;
++    std::vector<float> means_;
++};
++
 +} // namespace splatx::oscd
 diff --git a/Sources/SplatXCore/include/splatx/Trainer.h b/Sources/SplatXCore/include/splatx/Trainer.h
 index 97e12e4..fa39673 100644
@@ -566,10 +613,10 @@ index 97e12e4..fa39673 100644
      int64_t splat_count() const { return cloud_.count; }
 diff --git a/Sources/SplatXTrainC/OscdFusionC.cpp b/Sources/SplatXTrainC/OscdFusionC.cpp
 new file mode 100644
-index 0000000..e852b3f
+index 0000000..12ca8bb
 --- /dev/null
 +++ b/Sources/SplatXTrainC/OscdFusionC.cpp
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,193 @@
 +// oscd_mobile patch — C API for O-SCD change fusion. See include/oscd_fusion_c.h.
 +#include "oscd_fusion_c.h"
 +
@@ -582,6 +629,11 @@ index 0000000..e852b3f
 +#include <memory>
 +#include <stdexcept>
 +#include <string>
++
++struct OscdDepth {
++    std::unique_ptr<splatx::KernelBackend> backend;   // declared first: destroyed after the renderer
++    std::unique_ptr<splatx::oscd::DepthRenderer> renderer;
++};
 +
 +struct OscdFusion {
 +    std::unique_ptr<splatx::KernelBackend> backend;   // declared first: destroyed after fusion
@@ -729,12 +781,41 @@ index 0000000..e852b3f
 +}
 +
 +extern "C" void oscd_fusion_close(OscdFusion* f) { delete f; }
++
++extern "C" OscdDepth* oscd_depth_open(const char* ply_path, const char* kernel_src_dir, char* err,
++                                      int32_t err_len) {
++    try {
++        if (!ply_path) throw std::invalid_argument("ply_path must be given");
++        splatx::MetalBackendDesc desc;
++        desc.search_exe_dir = true;
++        desc.kernel_src_dir = kernel_src_dir ? std::string(kernel_src_dir) : KERNEL_SRC_DIR;
++        auto d = std::make_unique<OscdDepth>();
++        d->backend = splatx::make_metal_backend(nullptr, desc);
++        d->renderer = std::make_unique<splatx::oscd::DepthRenderer>(*d->backend, splatx::read_inria_ply(ply_path));
++        return d.release();
++    } catch (const std::exception& e) {
++        set_err(err, err_len, e.what());
++        return nullptr;
++    }
++}
++
++extern "C" int32_t oscd_depth_render(OscdDepth* d, const float* viewmat, float fx, float fy, float cx,
++                                     float cy, int32_t width, int32_t height, float min_alpha,
++                                     float* out, char* err, int32_t err_len) {
++    if (!d || !out) { set_err(err, err_len, "null depth renderer or output"); return -1; }
++    return guarded(err, err_len, [&] {
++        const auto depth = d->renderer->expected_depth(camera(viewmat, fx, fy, cx, cy, width, height), min_alpha);
++        std::memcpy(out, depth.data(), depth.size() * sizeof(float));
++    });
++}
++
++extern "C" void oscd_depth_close(OscdDepth* d) { delete d; }
 diff --git a/Sources/SplatXTrainC/include/oscd_fusion_c.h b/Sources/SplatXTrainC/include/oscd_fusion_c.h
 new file mode 100644
-index 0000000..75525ae
+index 0000000..2973ea1
 --- /dev/null
 +++ b/Sources/SplatXTrainC/include/oscd_fusion_c.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,53 @@
 +// oscd_mobile patch — C API for O-SCD change fusion (splatx/OscdFusion.h). All functions return 0 on
 +// success and a negative value on failure with a message in err (NUL-terminated). Single-thread use.
 +#pragma once
@@ -776,6 +857,14 @@ index 0000000..75525ae
 +// Copies log-scales (count·3) and activated opacities (count); returns count or -1 if capacity < count.
 +int64_t oscd_fusion_debug_params(OscdFusion* f, float* log_scales, float* opacities, int64_t capacity);
 +void oscd_fusion_close(OscdFusion* f);
++
++// Expected depth of the reference (Method B): Σ wᵢzᵢ / Σ wᵢ per pixel, NaN where Σ wᵢ < min_alpha.
++typedef struct OscdDepth OscdDepth;
++OscdDepth* oscd_depth_open(const char* ply_path, const char* kernel_src_dir, char* err, int32_t err_len);
++int32_t oscd_depth_render(OscdDepth* d, const float* viewmat, float fx, float fy, float cx, float cy,
++                          int32_t width, int32_t height, float min_alpha, float* out, char* err,
++                          int32_t err_len);
++void oscd_depth_close(OscdDepth* d);
 +
 +#ifdef __cplusplus
 +}

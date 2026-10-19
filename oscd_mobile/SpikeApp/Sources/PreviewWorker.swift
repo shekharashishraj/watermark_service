@@ -79,9 +79,12 @@ final class PreviewWorker {
                 guard let frame = pending else { lock.unlock(); continue }
                 pending = nil; processing = true
                 lock.unlock()
-                let result = process(frame, method: method)
-                log(result.headline + " | " + result.details)
-                onResult?(result)
+                // Returns once the change cue is ready; the frame's fusion and mask arrive later from the
+                // fusion thread, while the next frame is already being processed.
+                process(frame, method: method) { [weak self] result in
+                    self?.log(result.headline + " | " + result.details)
+                    self?.onResult?(result)
+                }
                 lock.lock(); processing = false; lock.unlock()
             }
             status("Stopped")
@@ -90,33 +93,40 @@ final class PreviewWorker {
         }
     }
 
-    private func process(_ f: CameraFrame, method: MethodA) -> PreviewResult {
+    private func process(_ f: CameraFrame, method: MethodA, deliver: @escaping (PreviewResult) -> Void) {
         let W = f.intrinsics.width, H = f.intrinsics.height, n = W * H
         let plain = PreviewComposite.overlay(rgb8: f.rgb, changed: [Bool](repeating: false, count: n),
                                              valid: [Bool](repeating: true, count: n))
         do {
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let out = try method.process(f)
-            let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-            let details = out.timings.map { String(format: "%@ %.0f", $0.0, $0.1) }.joined(separator: " · ")
-                + String(format: " · total %.0f ms", totalMs)
-            guard out.pose != nil, let ren = out.render else {
-                return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
-                                     headline: "Can't line this view up with \(method.beforeLabel): \(out.rejection ?? "no match"). Point at the same table from about as far as that scan.",
-                                     details: details)
+            let out = try method.process(f) { out, fused in
+                // On the fusion thread, after this frame has been fused; `out` is this frame's result.
+                let judged = out.valid.filter { $0 }.count
+                let flagged = zip(fused.changed, out.valid).filter { $0 && $1 }.count
+                var rgba = [UInt8](repeating: 255, count: n * 4)
+                if let ren = out.render {
+                    for i in 0..<n { for c in 0..<3 { rgba[i * 4 + c] = UInt8(min(255, ren.data[c * n + i] * 255)) } }
+                }
+                let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+                let details = out.timings.map { String(format: "%@ %.0f", $0.0, $0.1) }.joined(separator: " · ")
+                    + String(format: " · %@ %.0f · %@ %.0f · frame to mask %.0f ms · %d anchor points, %d Gaussians",
+                             MethodA.Stage.fusion, fused.fusionMs, MethodA.Stage.mask, fused.maskMs, totalMs,
+                             out.anchorPoints, fused.gaussians)
+                deliver(PreviewResult(
+                    overlayRGBA: PreviewComposite.overlay(rgb8: f.rgb, changed: fused.changed, valid: out.valid),
+                    renderRGBA: rgba, width: W, height: H,
+                    headline: String(format: "Camera placed · %.0f%% of the table in view changed · %d views combined",
+                                     100 * Double(flagged) / Double(max(judged, 1)), fused.fusedFrames),
+                    details: details))
             }
-            let judged = out.valid.filter { $0 }.count
-            let flagged = zip(out.changed, out.valid).filter { $0 && $1 }.count
-            var renderRGBA = [UInt8](repeating: 255, count: n * 4)
-            for i in 0..<n { for c in 0..<3 { renderRGBA[i * 4 + c] = UInt8(min(255, ren.data[c * n + i] * 255)) } }
-            let headline = String(format: "Camera placed · %.0f%% of the table in view changed · %d views combined",
-                                  100 * Double(flagged) / Double(max(judged, 1)), method.fusedFrames)
-            return PreviewResult(overlayRGBA: PreviewComposite.overlay(rgb8: f.rgb, changed: out.changed, valid: out.valid),
-                                 renderRGBA: renderRGBA, width: W, height: H, headline: headline,
-                                 details: details + String(format: " · %d anchor points, %d Gaussians", out.anchorPoints, method.gaussians))
+            if out.pose == nil {
+                deliver(PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
+                                      headline: "Can't line this view up with \(method.beforeLabel): \(out.rejection ?? "no match"). Point at the same table from about as far as that scan.",
+                                      details: out.timings.map { String(format: "%@ %.0f", $0.0, $0.1) }.joined(separator: " · ")))
+            }
         } catch {
-            return PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
-                                 headline: "This frame failed: \(error.localizedDescription)", details: "")
+            deliver(PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
+                                  headline: "This frame failed: \(error.localizedDescription)", details: ""))
         }
     }
 }

@@ -115,6 +115,8 @@ struct ScanStatusChip: View {
 /// One scan's details and its saved results.
 struct ScanDetailScreen: View {
     @EnvironmentObject private var library: ScanLibrary
+    @EnvironmentObject private var builder: ReferenceBuilder
+    @State private var showBuild = false
     @Environment(\.dismiss) private var dismiss
     let scan: ScanInfo
     @State private var shown: DetectionResult?
@@ -159,11 +161,17 @@ struct ScanDetailScreen: View {
                         }
                         .disabled(library.before?.id == scan.id)
                     }
-                } else {
-                    Section {
-                        Text("To use this scan as the before-scan, build its 3D model on the Mac:\ntools/build_reference.sh \(scan.id)")
-                            .font(.system(size: 12)).foregroundColor(VeriColor.nickel).textSelection(.enabled)
+                }
+                Section {
+                    Button(scan.hasReference ? "Rebuild 3D model on this phone" : "Build 3D model on this phone") {
+                        builder.start(scan: scan)
+                        showBuild = true
                     }
+                    .disabled(builder.running || scan.frameCount < 20)
+                } footer: {
+                    Text(scan.frameCount < 20 ? "At least 20 frames are needed." :
+                         "About 1–2 minutes. On the Mac instead: tools/build_reference.sh \(scan.id)")
+                        .textSelection(.enabled)
                 }
             }
             .listStyle(.insetGrouped)
@@ -171,6 +179,9 @@ struct ScanDetailScreen: View {
         }
         .background(VeriColor.background)
         .toolbar(.hidden, for: .navigationBar)
+        .fullScreenCover(isPresented: $showBuild, onDismiss: { library.refresh() }) {
+            BuildSheet(builder: builder) { showBuild = false }
+        }
         .sheet(item: $shown) { result in
             NavigationStack {
                 VStack(spacing: 0) {

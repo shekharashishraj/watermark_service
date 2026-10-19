@@ -41,7 +41,8 @@ final class MethodA {
         static let cue = "Change cue (pixel + SAM2)"
         static let fusion = "Fusion (16 steps)"
         static let mask = "Change mask"
-        static let perFrame = [xfeat, retrieval, matching, pnp, bundleAdjust, render, judged, sam2, sam2Live, cue, fusion, mask]
+        static let fusionWait = "Wait for the previous frame's fusion"
+        static let perFrame = [xfeat, retrieval, matching, pnp, bundleAdjust, render, judged, sam2, sam2Live, cue, fusionWait, fusion, mask]
 
         static let refine = "Refine (O-SCD final pass)"
         static let finalMasks = "Final masks"
@@ -58,19 +59,25 @@ final class MethodA {
         var timings: [(String, Double)] = []
     }
 
+    /// What fusing one frame produced (delivered on the fusion thread).
+    struct Fused {
+        var changed: [Bool]               // change model at the frame's pose after fusing it, > 0.5
+        var fusionMs: Double
+        var maskMs: Double
+        var fusedFrames: Int
+        var gaussians: Int
+    }
+
     let anchors: AnchorSet
     let roi: AABB
     let beforeLabel: String
     private(set) var setupTimings = StageTimings()
-    private(set) var fusedFrames = 0
+    private var fusedFrames = 0                 // touched only on the fusion thread
     private let xfeat: XFeatModel
     private let sam: SAM2Encoder
     private let estimator: PoseEstimator
     private let renderer: SplatRenderer
-    private let fusion: ChangeFusion
-
-    var gaussians: Int { fusion.count }
-    var steps: Int { fusion.totalSteps }
+    private let fusion: FusionStage
 
     init(beforeScan: URL, beforeLabel: String, status: (String) -> Void) throws {
         self.beforeLabel = beforeLabel
@@ -115,15 +122,17 @@ final class MethodA {
         renderer = try SplatRenderer(plyPath: plyURL.path, kernelSourceDir: kernelURL.path)
         lap(Stage.openModel)
         status("Preparing the change model…")
-        fusion = try ChangeFusion(plyPath: plyURL.path, kernelSourceDir: kernelURL.path,
-                                  referenceCentres: views.map { $0.pose.centre })
+        fusion = try FusionStage(plyPath: plyURL.path, kernelSourceDir: kernelURL.path,
+                                 referenceCentres: views.map { $0.pose.centre })
         lap(Stage.openFusion)
         setupTimings = setup
     }
 
-    /// XFeat → O-SCD pose → render → judged area → SAM2 + pixel cue → fusion (16 steps) → mask
-    /// (change model rendered at this pose, value > 0.5, oscd.py:258-263).
-    func process(_ f: CameraFrame) throws -> Output {
+    /// XFeat → O-SCD pose → render → judged area → SAM2 + pixel cue, then hands the cue to the fusion
+    /// thread: 16 SSF steps and the mask (change model rendered at this pose, value > 0.5,
+    /// oscd.py:258-263), delivered to `fused` on that thread. Returns once the cue is computed, so the
+    /// caller can start the next frame while this one fuses (frames fuse in order; at most one waits).
+    func process(_ f: CameraFrame, fused: @escaping (Output, Fused) -> Void = { _, _ in }) throws -> Output {
         var out = Output()
         var clock = DispatchTime.now().uptimeNanoseconds
         func lap(_ stage: String) {
@@ -173,22 +182,40 @@ final class MethodA {
         out.timings.append((Stage.sam2Live, liveEmb.ms))
         let cues = CuesA.compute(live: live, render: ren, embRender: embRender, embLive: embLive, valid: out.valid)
         lap(Stage.cue)
-        try fusion.addFrame(pose: pose, intrinsics: anchors.intrinsics, cue: cues.combined, valid: out.valid)
-        try fusion.stepFrame()
-        fusedFrames += 1
-        lap(Stage.fusion)
-        out.changed = try changeMask(pose: pose)
-        lap(Stage.mask)
+        let K = anchors.intrinsics, valid = out.valid, cue = cues.combined, snapshot = out
+        fusion.submit { [weak self] model in
+            do {
+                let t0 = DispatchTime.now().uptimeNanoseconds
+                try model.addFrame(pose: pose, intrinsics: K, cue: cue, valid: valid)
+                try model.stepFrame()
+                let t1 = DispatchTime.now().uptimeNanoseconds
+                let changed = try model.changeMap(pose: pose, intrinsics: K).map { $0 > 0.5 }
+                let t2 = DispatchTime.now().uptimeNanoseconds
+                let n = (self?.fusedFrames ?? 0) + 1
+                self?.fusedFrames = n
+                fused(snapshot, Fused(changed: changed, fusionMs: Double(t1 - t0) / 1e6, maskMs: Double(t2 - t1) / 1e6,
+                            fusedFrames: n, gaussians: model.count))
+            } catch {
+                AppLog.write("fusion: \(error.localizedDescription)")
+            }
+        }
+        lap(Stage.fusionWait)
         return out
     }
 
-    /// The change model rendered at `pose`, thresholded at 0.5 as O-SCD does.
+    /// Waits for queued fusion, then renders the change model at `pose`, thresholded at 0.5 as O-SCD does.
     func changeMask(pose: Pose) throws -> [Bool] {
-        try fusion.changeMap(pose: pose, intrinsics: anchors.intrinsics).map { $0 > 0.5 }
+        let K = anchors.intrinsics
+        return try fusion.sync { try $0.changeMap(pose: pose, intrinsics: K).map { $0 > 0.5 } }
     }
 
-    /// O-SCD --refine: up to 3000 total steps over every frame fused so far.
-    func refine() throws { try fusion.refine() }
+    /// Waits for queued fusion, then runs O-SCD --refine: up to 3000 total steps over every frame fused so far.
+    func refine() throws { try fusion.sync { try $0.refine() } }
+
+    var gaussians: Int { (try? fusion.sync { $0.count }) ?? 0 }
+
+    /// Waits until every submitted frame has been fused.
+    func finishFusion() throws { try fusion.sync { _ in } }
 }
 
 /// The live image's embedding, filled in on a background queue while the pose is estimated.

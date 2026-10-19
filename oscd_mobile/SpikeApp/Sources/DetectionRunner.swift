@@ -71,6 +71,7 @@ final class DetectionRunner: ObservableObject {
             let store = try SessionStore(open: after.url)
             let m = store.manifest
             var kept: [(id: Int, rgb: [UInt8], valid: [Bool], pose: Pose)] = []
+            let fusionTimes = LockedTimings()
             let checkStart = DispatchTime.now().uptimeNanoseconds
             for (i, r) in m.keyframes.enumerated() {
                 if isCancelled { throw PreviewError.message("Cancelled") }
@@ -79,14 +80,19 @@ final class DetectionRunner: ObservableObject {
                 let frame = CameraFrame(rgb: rgb, depth: depth, confidence: conf, depthWidth: m.depthWidth,
                                         depthHeight: m.depthHeight, intrinsics: m.intrinsics)
                 let t0 = DispatchTime.now().uptimeNanoseconds
-                let out = try method.process(frame)
+                let W = m.intrinsics.width, H = m.intrinsics.height
+                let out = try method.process(frame) { [weak self] out, fused in
+                    // Fusion thread: this frame's fusion and mask times, and its mask for the progress view.
+                    fusionTimes.add(MethodA.Stage.fusion, fused.fusionMs)
+                    fusionTimes.add(MethodA.Stage.mask, fused.maskMs)
+                    let image = PreviewController.image(PreviewComposite.overlay(rgb8: rgb, changed: fused.changed, valid: out.valid), W, H)
+                    DispatchQueue.main.async { self?.latest = image }
+                }
                 for (stage, ms) in out.timings where ms > 0 { timings.add(stage, ms) }
                 if let pose = out.pose {
-                    timings.add("Total per frame (camera placed)", Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
+                    // With fusion overlapped, this is how long a placed frame holds up the next one.
+                    timings.add("Per placed frame, end to end", Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
                     kept.append((r.id, rgb, out.valid, pose))
-                    let overlay = PreviewComposite.overlay(rgb8: rgb, changed: out.changed, valid: out.valid)
-                    let image = PreviewController.image(overlay, m.intrinsics.width, m.intrinsics.height)
-                    DispatchQueue.main.async { self.latest = image }
                 }
                 let done = i + 1
                 let perFrame = seconds(since: checkStart) / Double(done)
@@ -94,6 +100,8 @@ final class DetectionRunner: ObservableObject {
                 set(step, .active(String(format: "%d / %d · camera placed in %d · %.1f s per frame",
                                          done, m.keyframes.count, kept.count, perFrame)))
             }
+            try method.finishFusion()
+            timings.merge(fusionTimes.value)
             set(step, .done(String(format: "camera placed in %d of %d frames · %.0f s", kept.count, m.keyframes.count,
                                    seconds(since: checkStart))))
 
@@ -146,4 +154,12 @@ final class DetectionRunner: ObservableObject {
             DispatchQueue.main.async { self.error = message; self.running = false }
         }
     }
+}
+
+/// Stage times written from the fusion thread and read once the run's fusion has finished.
+private final class LockedTimings {
+    private let lock = NSLock()
+    private var t = StageTimings()
+    func add(_ stage: String, _ ms: Double) { lock.lock(); t.add(stage, ms); lock.unlock() }
+    var value: StageTimings { lock.lock(); defer { lock.unlock() }; return t }
 }

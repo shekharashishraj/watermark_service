@@ -12,6 +12,11 @@ public struct StageTimings: Codable, Hashable, Sendable {
         samples[stage, default: []].append(ms)
     }
 
+    /// Appends every sample of `other`; new stages go after the existing ones, in `other`'s order.
+    public mutating func merge(_ other: StageTimings) {
+        for stage in other.stages { for ms in other.samples[stage] ?? [] { add(stage, ms) } }
+    }
+
     public func count(_ stage: String) -> Int { samples[stage]?.count ?? 0 }
 
     public func total(_ stage: String) -> Double { samples[stage]?.reduce(0, +) ?? 0 }

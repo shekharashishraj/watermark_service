@@ -13,6 +13,16 @@ final class StageTimingsTests: XCTestCase {
         XCTAssertNil(t.median("SAM2"))
     }
 
+    func testMergeAppendsSamplesAndKeepsFirstUseOrder() {
+        var a = StageTimings(); a.add("XFeat", 9); a.add("Fusion", 300)
+        var b = StageTimings(); b.add("Fusion", 280); b.add("Mask", 7)
+        a.merge(b)
+        XCTAssertEqual(a.stages, ["XFeat", "Fusion", "Mask"])
+        XCTAssertEqual(a.count("Fusion"), 2)
+        XCTAssertEqual(a.median("Fusion"), 290)
+        XCTAssertEqual(a.total("Mask"), 7)
+    }
+
     func testRoundTripsThroughJSON() throws {
         var t = StageTimings()
         t.add("Fusion", 676.5); t.add("SAM2", 191)

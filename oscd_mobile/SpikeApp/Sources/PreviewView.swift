@@ -1,22 +1,17 @@
 import RealityKit
 import SwiftUI
 
-struct ARViewHost: UIViewRepresentable {
-    let arView: ARView
-    func makeUIView(context: Context) -> ARView { arView }
-    func updateUIView(_ uiView: ARView, context: Context) {}
-}
-
 /// Live camera behind; on top, the latest processed frame with the changes in red (dimmed = not judged)
 /// and the before-scan's 3D model rendered from where the camera is.
 struct PreviewView: View {
     @EnvironmentObject private var library: ScanLibrary
     @ObservedObject var controller: PreviewController
     @State private var showTimings = false
+    @State private var appearToken = 0
 
     var body: some View {
         ZStack(alignment: .top) {
-            ARViewHost(arView: controller.arView).ignoresSafeArea()
+            SharedARViewSlot(onTap: nil).id(appearToken).ignoresSafeArea()
             VStack(spacing: 8) {
                 beforePicker
                 HStack(alignment: .top, spacing: 8) {
@@ -56,6 +51,7 @@ struct PreviewView: View {
             .padding(.top, 8)
         }
         .onAppear {
+            appearToken += 1
             controller.startSession()
             if library.before == nil { controller.status = "No scan has a 3D model yet. See Settings › Building a scan's 3D model." }
         }

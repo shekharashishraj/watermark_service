@@ -1,34 +1,13 @@
 import RealityKit
 import SwiftUI
 
-struct ARViewContainer: UIViewRepresentable {
-    let controller: CaptureController
-
-    func makeUIView(context: Context) -> ARView {
-        let view = controller.arView
-        view.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:))))
-        AppLog.write("capture: makeUIView")
-        controller.start()
-        return view
-    }
-
-    func updateUIView(_ uiView: ARView, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
-
-    final class Coordinator: NSObject {
-        let controller: CaptureController
-        init(controller: CaptureController) { self.controller = controller }
-        @objc func tap(_ gesture: UITapGestureRecognizer) { controller.placeROI(at: gesture.location(in: gesture.view)) }
-    }
-}
-
 struct CaptureView: View {
     @ObservedObject var controller: CaptureController
+    @State private var appearToken = 0
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ARViewContainer(controller: controller).ignoresSafeArea()
+            SharedARViewSlot(onTap: { controller.placeROI(at: $0) }).id(appearToken).ignoresSafeArea()
             VStack(spacing: 12) {
                 Text(controller.status)
                     .font(.callout)
@@ -41,5 +20,6 @@ struct CaptureView: View {
             }
             .padding(.bottom, 32)
         }
+        .onAppear { appearToken += 1 }
     }
 }

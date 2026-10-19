@@ -10,7 +10,7 @@ import UIKit
 final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     static let working = (width: 480, height: 360)
 
-    let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
+    var arView: ARView { SharedAR.view }
     @Published var status = "Tap the table to place the scan region"
     @Published var keyframeCount = 0
     @Published var recording = false
@@ -45,11 +45,6 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         if recording { toggleRecording() }
         AppLog.write("capture: session.pause")
         arView.session.pause()
-    }
-
-    func resume() {
-        guard started else { return }
-        start()
     }
 
     func placeROI(at point: CGPoint) {
@@ -107,14 +102,23 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         AppLog.write("capture: tracking \(camera.trackingState)")
     }
 
-    private func logFirstFrame() {
+    private func logFirstFrame(_ frame: ARFrame) {
         guard !firstFrameLogged else { return }
         firstFrameLogged = true
-        AppLog.write("capture: first frame")
+        // Mean luma of a sparse sample: ~0 means the lens sees nothing (covered or face down).
+        let buf = frame.capturedImage
+        CVPixelBufferLockBaseAddress(buf, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
+        let w = CVPixelBufferGetWidthOfPlane(buf, 0), h = CVPixelBufferGetHeightOfPlane(buf, 0)
+        let row = CVPixelBufferGetBytesPerRowOfPlane(buf, 0)
+        let y = CVPixelBufferGetBaseAddressOfPlane(buf, 0)!.assumingMemoryBound(to: UInt8.self)
+        var sum = 0, n = 0
+        for v in stride(from: 0, to: h, by: 40) { for u in stride(from: 0, to: w, by: 40) { sum += Int(y[v * row + u]); n += 1 } }
+        AppLog.write("capture: first frame, mean luma \(sum / max(n, 1)) of 255")
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        logFirstFrame()
+        logFirstFrame(frame)
         guard recording, let sceneDepth = frame.sceneDepth, let roi else { return }
         var normal = false
         if case .normal = frame.camera.trackingState { normal = true }

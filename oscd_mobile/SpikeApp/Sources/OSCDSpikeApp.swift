@@ -32,7 +32,8 @@ struct RootView: View {
     @ObservedObject var runner: DetectionRunner
     // Launch arguments `-detectBefore <scan folder> -detectAfter <scan folder>` open Detect and run that
     // pair (devicectl ... process launch ... -- -detectBefore X -detectAfter Y): a rehearsal without tapping.
-    @State private var tab: Tab = UserDefaults.standard.string(forKey: "detectAfter") == nil ? .scans : .detect
+    @State private var tab: Tab = UserDefaults.standard.string(forKey: "detectAfter") != nil ? .detect
+        : UserDefaults.standard.string(forKey: "tab") == "capture" ? .capture : .scans     // `-tab capture` for checks
     @State private var showBuild = false
     @State private var viewScan: ScanInfo?
 
@@ -42,7 +43,7 @@ struct RootView: View {
                 .tabItem { Label("Scans", systemImage: "square.stack.3d.up") }
                 .tag(Tab.scans)
             CaptureView(controller: capture)
-                .onAppear { capture.resume() }
+                .onAppear { capture.start() }
                 .onDisappear { capture.pause(); library.refresh() }
                 .tabItem { Label("Capture", systemImage: "camera.viewfinder") }
                 .tag(Tab.capture)

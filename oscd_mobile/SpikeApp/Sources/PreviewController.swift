@@ -6,7 +6,7 @@ import UIKit
 
 /// Live view: ARKit supplies frames and LiDAR; PreviewWorker runs Method A against the before-scan.
 final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
-    let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
+    var arView: ARView { SharedAR.view }
     @Published var status = "Press Start to compare what the camera sees with the before-scan."
     @Published var overlay: UIImage?
     @Published var reference: UIImage?
@@ -75,14 +75,23 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
         AppLog.write("live: tracking \(camera.trackingState)")
     }
 
-    private func logFirstFrame() {
+    private func logFirstFrame(_ frame: ARFrame) {
         guard !firstFrameLogged else { return }
         firstFrameLogged = true
-        AppLog.write("live: first frame")
+        // Mean luma of a sparse sample: ~0 means the lens sees nothing (covered or face down).
+        let buf = frame.capturedImage
+        CVPixelBufferLockBaseAddress(buf, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
+        let w = CVPixelBufferGetWidthOfPlane(buf, 0), h = CVPixelBufferGetHeightOfPlane(buf, 0)
+        let row = CVPixelBufferGetBytesPerRowOfPlane(buf, 0)
+        let y = CVPixelBufferGetBaseAddressOfPlane(buf, 0)!.assumingMemoryBound(to: UInt8.self)
+        var sum = 0, n = 0
+        for v in stride(from: 0, to: h, by: 40) { for u in stride(from: 0, to: w, by: 40) { sum += Int(y[v * row + u]); n += 1 } }
+        AppLog.write("live: first frame, mean luma \(sum / max(n, 1)) of 255")
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        logFirstFrame()
+        logFirstFrame(frame)
         guard let worker, worker.wantsFrame, let sceneDepth = frame.sceneDepth else { return }
         let res = frame.camera.imageResolution
         let working = CaptureController.working

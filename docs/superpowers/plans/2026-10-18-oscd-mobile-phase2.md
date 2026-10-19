@@ -70,4 +70,11 @@
   - Scan 4 → Scan 4 (nothing changed): A 11.7 %, B 17.3 %.
 
   Cost if wrong: B stays noisier than A until the λ weights are tuned on labelled masks (spec §8.3).
-
+- Added after the plan: the 3D viewer (`OrbitCamera` + `ModelViewer`, 3 tests, 32–40 ms per view; `4c3ef816`).
+- Fixed after the plan:
+  - black Capture screen: two ARViews; now one shared ARView (`7d160ec4`);
+  - Live view showing nothing: trailing-closure binding to `fusedB` (`d2f5cb6c`).
+- Results: `oscd_mobile/docs/2026-10-19_phase2_runs.md`.
+- Next:
+  - depth-regularised reference training (spec §7.3; measured 1.1 cm);
+  - λ tuning for B on labelled masks (§8.3).

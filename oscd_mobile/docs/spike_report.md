@@ -84,11 +84,11 @@ Reference: the "before" scan `15-45-15Z` exported with `tools/session_to_colmap.
 | PSNR at a training view (same renderer) | **29.4 dB** | 23.7 dB |
 | Masked fraction inside the ROI (median over 47 after-frames) | **0.148** | 0.189 |
 | Mask quality (see `engine_comparison_masks.png`) | clean: moved ball and sunglasses at old and new positions | same objects plus speckle across the sheet from a noisier reference |
-| 3k iterations at 480×360 on the iPhone (s) | pending human step: needs the engine's iOS app | pending human step |
+| 3k iterations at 480×360 on the iPhone (s) | **41.3 s** (Scan 4, 95,427 Gaussians; 58.0 s for Scan 8), through the app (2026-10-18) | not measured (fallback not needed) |
 | iPhone peak memory (MB) | pending human step | pending human step |
 | 1 Custom loss hook (file:line) | added by our patch: `Trainer::backward_custom` (`patches/splatx-oscd-fusion.patch`) | pending source read |
 | 2 Per-parameter LR incl. xyz = 0 | yes, via the patch's `torch_adam` (xyz frozen) | pending |
-| 3 Expected-depth render | pending | pending |
+| 3 Expected-depth render | added by our patch: `DepthRenderer` (Σwz / Σw in one render) | pending |
 | 4 External densify/prune/reset | yes, via the patch (`OscdFusion.cpp`: clone/split, prune, opacity reset) | pending |
 | 5 Rasterizer constants match O-SCD | pending | pending |
 | 6 SH degree 0 | trained at SH 3 by default | trained at SH 3 by default |
@@ -128,8 +128,8 @@ XFeat → O-SCD pose (77,525 anchors, D11 depths) → splatx render at that pose
 Still to verify against the real O-SCD on Sol: everything above, at fp16 CUDA on real PASLCD data, plus F-RANSAC (a CUDA-only kernel) and the end-to-end pose and anchor parity.
 
 ## Decisions
-- Engine: **provisionally splatx-metal** (29.4 vs 23.7 dB, cleaner masks). Pending: iPhone training time (≤ 180 s) and capability items 1–5.
-- Reference build: pending (depends on the engine's on-device timing).
+- Engine: **splatx-metal** (29.4 vs 23.7 dB, cleaner masks; 41–58 s per 3,000-iteration build on the iPhone, inside the ≤ 180 s budget). Capability items 1–4 are covered by our patch; item 5 is still to read.
+- Reference build: **on the phone** (Scan detail › Build 3D model on this phone, 42–59 s). `tools/build_reference.sh` remains the Mac path.
 - D9 (fewer keypoints or lower resolution): pending device timings.
 - D11 (disambiguation depths): **(0.1, 1.0) m adopted**. At 30 cm from the table, keyframes a few cm apart produce too little parallax for O-SCD's 1 m / 10 m gate, so the real-scan yield was 0.011–0.027.
 - Live demo: **online O-SCD fusion, no Refine** (Refine stays in `OSCDFusion` for an offline final-result view).
@@ -143,4 +143,13 @@ Still to verify against the real O-SCD on Sol: everything above, at fp16 CUDA on
   - camera placed in 28 of 47 frames; 16.8 % of the judged table area changed;
   - 30 s in total: setup 7.3 s, then 0.66 s per placed frame (median);
   - fusion took 264 ms per frame, against about 680 ms in the live view, which also runs ARKit.
+- Phase 2 (2026-10-18/19; details in `2026-10-19_phase2_runs.md`):
+  - on-phone model build: 42.2 s for Scan 4, matching the Mac model's Detect result;
+  - fusion overlapped with the next frame: 527 ms per placed frame with A and B both running;
+  - Method B with D13: Scan 4 → 5, A 16.7 % / B 37.1 %; unchanged Scan 4 → 4, A 11.7 % / B 17.3 %;
+  - 3D viewer at 32–40 ms per view.
+- Open:
+  - depth-regularised reference training: the §7.3 check measured 1.1 cm, above the 1 cm trigger;
+  - tune B's λ weights on hand-labelled masks (§8.3);
+  - Sol parity fixtures.
 - Go / no-go for Phase 2: pending the human steps above.

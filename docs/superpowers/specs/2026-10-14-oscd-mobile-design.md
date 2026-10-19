@@ -255,7 +255,7 @@ RANSAC (2,000 tiny LM solves) runs batched on the GPU, and mini-BA runs on the C
 | # | O-SCD | Ours | Why |
 |---|---|---|---|
 | D1 | Reference poses from COLMAP | ARKit poses from the reference scan | No SfM on the phone. O-SCD only needs posed reference images, whatever their source. |
-| D2 | Prebuilt FastGS reference: 30k iterations, SH degree 3 | On-device Metal trainer, LiDAR initialization, about 3k steps, SH 0–1, cropped to the ROI (§7) | Live on-device build |
+| D2 | Prebuilt FastGS reference: 30k iterations, SH degree 3 | On-device splatx trainer: LiDAR initialization, 3,000 steps, SH 3, cropped to the ROI (§7). Measured: 41–58 s on the iPhone 17 Pro. The §7.3 depth-quality loss is not yet in (median depth gap 1.1 cm). | Live on-device build. SH 3 keeps the settings of the validated Mac model. |
 | D3 | Cues and loss computed over all pixels | Valid pixels only (inside the ROI, rendered reference alpha ≥ 0.5) | Our reference covers only the table, so the unreconstructed room must not count as "change" |
 | D4 | PyTorch SAM2.1-tiny | Apple Core ML fp16 SAM2.1-tiny (same weights) | On-device; the gap is bounded by the parity tests |
 | D5 | CUDA F-RANSAC and P4P RANSAC, GPU mini-BA | The same algorithms in Metal (RANSAC) and on the CPU (mini-BA) | Platform |

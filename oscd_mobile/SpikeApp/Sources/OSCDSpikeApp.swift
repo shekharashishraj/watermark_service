@@ -1,3 +1,4 @@
+import OSCDCore
 import SwiftUI
 
 @main
@@ -33,6 +34,7 @@ struct RootView: View {
     // pair (devicectl ... process launch ... -- -detectBefore X -detectAfter Y): a rehearsal without tapping.
     @State private var tab: Tab = UserDefaults.standard.string(forKey: "detectAfter") == nil ? .scans : .detect
     @State private var showBuild = false
+    @State private var viewScan: ScanInfo?
 
     var body: some View {
         TabView(selection: $tab) {
@@ -56,6 +58,10 @@ struct RootView: View {
             library.refresh()
             AppLog.write("app: launched, camera=\(AppLog.cameraAuthorization())")
             // `-buildReference <scan folder>` builds that scan's 3D model at launch (a check without tapping).
+            // `-viewModel <scan folder>` opens that scan's 3D model viewer at launch.
+            if let id = UserDefaults.standard.string(forKey: "viewModel") {
+                viewScan = library.scans.first { $0.id == id && $0.hasReference }
+            }
             if let id = UserDefaults.standard.string(forKey: "buildReference"), !builder.running,
                let scan = library.scans.first(where: { $0.id == id }) {
                 builder.start(scan: scan)
@@ -65,6 +71,7 @@ struct RootView: View {
         .fullScreenCover(isPresented: $showBuild, onDismiss: { library.refresh() }) {
             BuildSheet(builder: builder) { showBuild = false }
         }
+        .fullScreenCover(item: $viewScan) { scan in ModelViewerScreen(scan: scan) }
         .onChange(of: tab) { _, t in AppLog.write("app: tab \(t)") }
     }
 }

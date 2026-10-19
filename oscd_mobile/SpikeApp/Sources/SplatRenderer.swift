@@ -30,6 +30,22 @@ final class SplatRenderer {
 
     deinit { sx_render_session_close(session) }
 
+    /// Interleaved RGBA (alpha 255) at `pose` — for display.
+    func renderRGBA(pose: Pose, intrinsics K: Intrinsics) throws -> [UInt8] {
+        let R = pose.R, t = pose.t
+        let viewmat: [Float] = [R[0][0], R[1][0], R[2][0], t.x,
+                                R[0][1], R[1][1], R[2][1], t.y,
+                                R[0][2], R[1][2], R[2][2], t.z,
+                                0, 0, 0, 1]
+        var rgba = [UInt8](repeating: 0, count: K.width * K.height * 4)
+        var err = [CChar](repeating: 0, count: 512)
+        let rc = sx_render_session_frame(session, viewmat, K.f, K.f, K.cx, K.cy, Int32(K.width), Int32(K.height),
+                                         &rgba, &err, Int32(err.count))
+        guard rc == 0 else { throw PreviewError.message("Render failed (\(rc)): \(String(cString: err))") }
+        for i in 0..<(K.width * K.height) { rgba[i * 4 + 3] = 255 }
+        return rgba
+    }
+
     /// `pose` is world-to-camera in OpenCV axes, which is splatx's viewmat convention (row-major).
     func render(pose: Pose, intrinsics K: Intrinsics) throws -> FloatImage {
         let R = pose.R, t = pose.t

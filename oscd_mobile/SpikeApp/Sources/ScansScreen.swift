@@ -156,6 +156,13 @@ struct ScanDetailScreen: View {
                 }
                 if scan.hasReference {
                     Section {
+                        NavigationLink {
+                            ModelViewerScreen(scan: scan)
+                        } label: {
+                            Label("View 3D model", systemImage: "cube.transparent")
+                        }
+                    }
+                    Section {
                         Button(library.before?.id == scan.id ? "This is the before-scan" : "Use as the before-scan") {
                             library.beforeID = scan.id
                         }

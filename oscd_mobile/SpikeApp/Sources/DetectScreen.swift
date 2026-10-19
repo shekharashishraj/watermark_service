@@ -7,6 +7,7 @@ struct DetectScreen: View {
     @ObservedObject var runner: DetectionRunner
     @State private var afterID = ""
     @State private var refine = false
+    @State private var withB = true
     @State private var showRun = false
 
     private var before: ScanInfo? { library.before }
@@ -41,12 +42,13 @@ struct DetectScreen: View {
                         Spacer()
                         Image(systemName: "checkmark.circle.fill").foregroundColor(VeriColor.primary)
                     }
-                    HStack {
-                        Text("B · adds depth and colour")
-                        Spacer()
-                        Text("not built yet").font(.system(size: 12))
+                    Toggle(isOn: $withB) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Also B · adds LiDAR depth and colour")
+                            Text("Same frames and camera positions as A; compare them in the results").font(.system(size: 12)).foregroundColor(VeriColor.nickel)
+                        }
                     }
-                    .foregroundColor(VeriColor.nickel)
+                    .tint(VeriColor.primary)
                     Toggle(isOn: $refine) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Refine at the end")
@@ -60,7 +62,7 @@ struct DetectScreen: View {
             .scrollContentBackground(.hidden)
             VeriButton(title: "Run detection", systemImage: "play.fill", disabled: before == nil || after == nil) {
                 guard let before, let after else { return }
-                runner.start(before: before, after: after, refine: refine)
+                runner.start(before: before, after: after, refine: refine, withB: withB)
                 showRun = true
             }
             .padding(.horizontal, 16)
@@ -84,7 +86,7 @@ struct DetectScreen: View {
         afterID = a
         guard let before = library.scans.first(where: { $0.id == b && $0.hasReference }),
               let after = library.scans.first(where: { $0.id == a }) else { return }
-        runner.start(before: before, after: after, refine: d.bool(forKey: "detectRefine"))
+        runner.start(before: before, after: after, refine: d.bool(forKey: "detectRefine"), withB: d.bool(forKey: "detectB"))
         showRun = true
     }
 
@@ -177,27 +179,40 @@ struct DetectionSheet: View {
 struct ResultsView: View {
     let result: DetectionResult
     @State private var index = 0.0
+    @State private var showB = false
+
+    private var run: DetectionResult.Run { showB ? (result.b ?? result.a) : result.a }
 
     var body: some View {
-        let s = result.summary
+        let s = run.summary
+        let frames = run.frames
         List {
+            if let b = result.b {
+                Section {
+                    Picker("Method", selection: $showB) {
+                        Text(String(format: "A · %.1f%% changed", 100 * result.a.summary.changedFraction)).tag(false)
+                        Text(String(format: "B · %.1f%% changed", 100 * b.summary.changedFraction)).tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                } footer: { Text("A: O-SCD exactly. B: O-SCD plus the LiDAR depth and colour cues, over the same frames.") }
+            }
             Section {
-                if result.frames.isEmpty {
+                if frames.isEmpty {
                     Text("No frame of \(result.afterLabel) could be lined up with \(result.beforeLabel), so nothing was judged. The two scans need the same table, seen from similar distances.")
                         .font(.system(size: 13)).foregroundColor(VeriColor.nickel)
                 } else {
-                    let i = min(Int(index.rounded()), result.frames.count - 1)
-                    if let data = try? Data(contentsOf: result.frames[i]), let image = UIImage(data: data), let cg = image.cgImage {
+                    let i = min(Int(index.rounded()), frames.count - 1)
+                    if let data = try? Data(contentsOf: frames[i]), let image = UIImage(data: data), let cg = image.cgImage {
                         Image(uiImage: UIImage(cgImage: cg, scale: 1, orientation: .right))
                             .resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                    if result.frames.count > 1 {
-                        Slider(value: $index, in: 0...Double(result.frames.count - 1), step: 1).tint(VeriColor.primary)
+                    if frames.count > 1 {
+                        Slider(value: $index, in: 0...Double(frames.count - 1), step: 1).tint(VeriColor.primary)
                     }
-                    Text("Frame \(i + 1) of \(result.frames.count) · red: changed · dimmed: not judged")
+                    Text("Frame \(i + 1) of \(frames.count) · red: changed · dimmed: not judged")
                         .font(.system(size: 11)).foregroundColor(VeriColor.nickel)
                 }
-            } header: { Text("\(result.afterLabel) against \(result.beforeLabel)") }
+            } header: { Text("\(result.afterLabel) against \(result.beforeLabel) · Method \(showB ? "B" : "A")") }
 
             Section("Summary") {
                 row("Camera placed", "\(s.framesWithPose) of \(s.frames) frames")
@@ -212,7 +227,7 @@ struct ResultsView: View {
                     ForEach(setup, id: \.self) { row($0, Formatters.ms(s.timings.total($0))) }
                 }
             }
-            let finishing = [MethodA.Stage.refine, MethodA.Stage.finalMasks]
+            let finishing = [MethodA.Stage.refine, "B: " + MethodA.Stage.refine, MethodA.Stage.finalMasks]
             let perFrame = s.timings.stages.filter { !MethodA.Stage.setup.contains($0) && !finishing.contains($0) }
             if !perFrame.isEmpty {
                 Section {

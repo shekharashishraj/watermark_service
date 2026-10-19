@@ -73,6 +73,19 @@ final class ScanCatalogTests: XCTestCase {
         XCTAssertNil(scans[0].latestDetection)
     }
 
+    func testMethodBIsSavedBesideAAndNotListedAsItsOwnRun() throws {
+        let after = dir.appendingPathComponent("b")
+        let a = DetectionSummary(beforeID: "a", afterID: "b", method: "A", refined: false, frames: 10, framesWithPose: 5,
+                                 judgedPixels: 100, changedPixels: 10, totalSeconds: 1, timings: StageTimings())
+        var b = a; b.method = "B"; b.changedPixels = 20
+        try a.save(in: after)
+        try b.save(in: after)
+        XCTAssertEqual(try DetectionSummary.all(in: after).map(\.method), ["A"])
+        XCTAssertEqual(DetectionSummary.load(in: after, beforeID: "a", method: "B")?.changedPixels, 20)
+        XCTAssertEqual(DetectionSummary.load(in: after, beforeID: "a", method: "A")?.changedPixels, 10)
+        XCTAssertEqual(DetectionSummary.folder(in: after, beforeID: "a", method: "B").lastPathComponent, "B")
+    }
+
     func testDetectionSummaryKeepsOnlyTheLatestRunPerBeforeScan() throws {
         let after = dir.appendingPathComponent("b")
         var s1 = DetectionSummary(beforeID: "a", afterID: "b", method: "A", refined: false, frames: 10, framesWithPose: 5,

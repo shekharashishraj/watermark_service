@@ -39,7 +39,8 @@ public enum ScanCatalog {
 }
 
 /// The outcome of one Detect run, saved in the after-scan at detections/<before-scan id>/summary.json
-/// next to that run's mask images (a new run against the same before-scan replaces it).
+/// next to that run's mask images (a new run against the same before-scan replaces it). Method B's run
+/// over the same frames goes in detections/<before-scan id>/B/.
 public struct DetectionSummary: Codable, Hashable, Sendable {
     public var beforeID: String
     public var afterID: String
@@ -63,12 +64,18 @@ public struct DetectionSummary: Codable, Hashable, Sendable {
     /// Changed share of the judged table area over all frames with a pose.
     public var changedFraction: Double { judgedPixels == 0 ? 0 : Double(changedPixels) / Double(judgedPixels) }
 
-    public static func folder(in afterScan: URL, beforeID: String) -> URL {
-        afterScan.appendingPathComponent("detections").appendingPathComponent(beforeID)
+    public static func folder(in afterScan: URL, beforeID: String, method: String = "A") -> URL {
+        let a = afterScan.appendingPathComponent("detections").appendingPathComponent(beforeID)
+        return method == "A" ? a : a.appendingPathComponent(method)
+    }
+
+    public static func load(in afterScan: URL, beforeID: String, method: String = "A") -> DetectionSummary? {
+        let url = folder(in: afterScan, beforeID: beforeID, method: method).appendingPathComponent("summary.json")
+        return (try? Data(contentsOf: url)).flatMap { try? SessionStore.decoder.decode(DetectionSummary.self, from: $0) }
     }
 
     public func save(in afterScan: URL) throws {
-        let dir = Self.folder(in: afterScan, beforeID: beforeID)
+        let dir = Self.folder(in: afterScan, beforeID: beforeID, method: method)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try SessionStore.encoder.encode(self).write(to: dir.appendingPathComponent("summary.json"), options: .atomic)
     }

@@ -42,6 +42,8 @@ final class MethodA {
         static let fusion = "Fusion (16 steps)"
         static let mask = "Change mask"
         static let fusionWait = "Wait for the previous frame's fusion"
+        static let depthRender = "B: render the before model's depth"
+        static let cuesB = "B: depth + colour cues"
         static let perFrame = [xfeat, retrieval, matching, pnp, bundleAdjust, render, judged, sam2, sam2Live, cue, fusionWait, fusion, mask]
 
         static let refine = "Refine (O-SCD final pass)"
@@ -72,14 +74,20 @@ final class MethodA {
     let roi: AABB
     let beforeLabel: String
     private(set) var setupTimings = StageTimings()
-    private var fusedFrames = 0                 // touched only on the fusion thread
+    private var fusedFrames = 0                 // touched only on the fusion threads
+    private var fusedFramesB = 0
     private let xfeat: XFeatModel
     private let sam: SAM2Encoder
     private let estimator: PoseEstimator
     private let renderer: SplatRenderer
     private let fusion: FusionStage
+    /// Method B (spec §8): same frames and poses as A, cue C_B = clamp(C_A + C_depth + C_color, 0, 2),
+    /// fused into its own change model with the same seed. Nil when only A runs.
+    private let referenceDepth: ReferenceDepth?
+    private let fusionB: FusionStage?
+    var hasB: Bool { fusionB != nil }
 
-    init(beforeScan: URL, beforeLabel: String, status: (String) -> Void) throws {
+    init(beforeScan: URL, beforeLabel: String, withB: Bool = false, status: (String) -> Void) throws {
         self.beforeLabel = beforeLabel
         var clock = DispatchTime.now().uptimeNanoseconds
         var setup = StageTimings()
@@ -124,6 +132,14 @@ final class MethodA {
         status("Preparing the change model…")
         fusion = try FusionStage(plyPath: plyURL.path, kernelSourceDir: kernelURL.path,
                                  referenceCentres: views.map { $0.pose.centre })
+        if withB {
+            fusionB = try FusionStage(plyPath: plyURL.path, kernelSourceDir: kernelURL.path,
+                                      referenceCentres: views.map { $0.pose.centre })
+            referenceDepth = try ReferenceDepth(plyPath: plyURL.path, kernelSourceDir: kernelURL.path)
+        } else {
+            fusionB = nil
+            referenceDepth = nil
+        }
         lap(Stage.openFusion)
         setupTimings = setup
     }
@@ -132,7 +148,8 @@ final class MethodA {
     /// thread: 16 SSF steps and the mask (change model rendered at this pose, value > 0.5,
     /// oscd.py:258-263), delivered to `fused` on that thread. Returns once the cue is computed, so the
     /// caller can start the next frame while this one fuses (frames fuse in order; at most one waits).
-    func process(_ f: CameraFrame, fused: @escaping (Output, Fused) -> Void = { _, _ in }) throws -> Output {
+    func process(_ f: CameraFrame, fused: @escaping (Output, Fused) -> Void = { _, _ in },
+                 fusedB: @escaping (Output, Fused) -> Void = { _, _ in }) throws -> Output {
         var out = Output()
         var clock = DispatchTime.now().uptimeNanoseconds
         func lap(_ stage: String) {
@@ -182,8 +199,28 @@ final class MethodA {
         out.timings.append((Stage.sam2Live, liveEmb.ms))
         let cues = CuesA.compute(live: live, render: ren, embRender: embRender, embLive: embLive, valid: out.valid)
         lap(Stage.cue)
-        let K = anchors.intrinsics, valid = out.valid, cue = cues.combined, snapshot = out
-        fusion.submit { [weak self] model in
+        let snapshot = out
+        submit(to: fusion, pose: pose, cue: cues.combined, valid: out.valid, snapshot: snapshot, counter: \.fusedFrames, deliver: fused)
+        if let fusionB, let referenceDepth {
+            let dRen = try referenceDepth.expectedDepth(pose: pose, intrinsics: anchors.intrinsics)
+            lap(Stage.depthRender)
+            let W = f.intrinsics.width, H = f.intrinsics.height
+            let dLive = CuesB.upsampleDepth(f.depth, confidence: f.confidence, width: f.depthWidth, height: f.depthHeight,
+                                            toWidth: W, toHeight: H)
+            let depthCue = CuesB.depthCue(live: dLive, rendered: dRen, valid: out.valid).cue
+            let colorCue = CuesB.colorCue(live: live, render: ren, liveDepth: dLive, renderDepth: dRen, valid: out.valid)
+            let cB = CuesB.combine(cA: cues.combined, depth: depthCue, color: colorCue, valid: out.valid)
+            lap(Stage.cuesB)
+            submit(to: fusionB, pose: pose, cue: cB, valid: out.valid, snapshot: snapshot, counter: \.fusedFramesB, deliver: fusedB)
+        }
+        lap(Stage.fusionWait)
+        return out
+    }
+
+    private func submit(to stage: FusionStage, pose: Pose, cue: [Float], valid: [Bool], snapshot: Output,
+                        counter: ReferenceWritableKeyPath<MethodA, Int>, deliver: @escaping (Output, Fused) -> Void) {
+        let K = anchors.intrinsics
+        stage.submit { [weak self] model in
             do {
                 let t0 = DispatchTime.now().uptimeNanoseconds
                 try model.addFrame(pose: pose, intrinsics: K, cue: cue, valid: valid)
@@ -191,31 +228,36 @@ final class MethodA {
                 let t1 = DispatchTime.now().uptimeNanoseconds
                 let changed = try model.changeMap(pose: pose, intrinsics: K).map { $0 > 0.5 }
                 let t2 = DispatchTime.now().uptimeNanoseconds
-                let n = (self?.fusedFrames ?? 0) + 1
-                self?.fusedFrames = n
-                fused(snapshot, Fused(changed: changed, fusionMs: Double(t1 - t0) / 1e6, maskMs: Double(t2 - t1) / 1e6,
-                            fusedFrames: n, gaussians: model.count))
+                let n = (self?[keyPath: counter] ?? 0) + 1
+                self?[keyPath: counter] = n
+                deliver(snapshot, Fused(changed: changed, fusionMs: Double(t1 - t0) / 1e6, maskMs: Double(t2 - t1) / 1e6,
+                                        fusedFrames: n, gaussians: model.count))
             } catch {
                 AppLog.write("fusion: \(error.localizedDescription)")
             }
         }
-        lap(Stage.fusionWait)
-        return out
     }
 
-    /// Waits for queued fusion, then renders the change model at `pose`, thresholded at 0.5 as O-SCD does.
-    func changeMask(pose: Pose) throws -> [Bool] {
+    private func stage(_ method: String) -> FusionStage? { method == "B" ? fusionB : fusion }
+
+    /// Waits for queued fusion, then renders method A's (or B's) change model at `pose`, thresholded at 0.5
+    /// as O-SCD does.
+    func changeMask(pose: Pose, method: String = "A") throws -> [Bool] {
         let K = anchors.intrinsics
-        return try fusion.sync { try $0.changeMap(pose: pose, intrinsics: K).map { $0 > 0.5 } }
+        guard let stage = stage(method) else { return [] }
+        return try stage.sync { try $0.changeMap(pose: pose, intrinsics: K).map { $0 > 0.5 } }
     }
 
     /// Waits for queued fusion, then runs O-SCD --refine: up to 3000 total steps over every frame fused so far.
-    func refine() throws { try fusion.sync { try $0.refine() } }
+    func refine(method: String = "A") throws { try stage(method)?.sync { try $0.refine() } }
 
-    var gaussians: Int { (try? fusion.sync { $0.count }) ?? 0 }
+    func gaussians(method: String = "A") -> Int { (try? stage(method)?.sync { $0.count }) ?? 0 }
 
-    /// Waits until every submitted frame has been fused.
-    func finishFusion() throws { try fusion.sync { _ in } }
+    /// Waits until every submitted frame has been fused (A and B).
+    func finishFusion() throws {
+        try fusion.sync { _ in }
+        try fusionB?.sync { _ in }
+    }
 }
 
 /// The live image's embedding, filled in on a background queue while the pose is estimated.

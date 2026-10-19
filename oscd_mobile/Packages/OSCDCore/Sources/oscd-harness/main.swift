@@ -10,11 +10,20 @@ import simd
 //     Builds anchors from the reference session, estimates every query keyframe's pose with
 //     O-SCD's XFeat + P4P + mini-BA, and compares it with ARKit (both sessions must share one
 //     ARKit world frame, i.e. come from one app run).
+//   oscd-harness colmap <session-dir> <out-dir>
+//     Writes the session as the COLMAP dataset the phone trains its reference from (ColmapExport),
+//     for comparison with tools/session_to_colmap.py.
 let usage = """
 usage: oscd-harness anchors <session-dir> <XFeat_480x352.mlpackage> [depth1 depth2]
        oscd-harness pose <reference-session> <query-session> <XFeat_480x352.mlpackage> [depth1 depth2]
+       oscd-harness colmap <session-dir> <out-dir>
 """
 let args = CommandLine.arguments
+if args.count == 4, args[1] == "colmap" {
+    let r = try ColmapExport.write(session: try SessionStore(open: URL(fileURLWithPath: args[2])), to: URL(fileURLWithPath: args[3]))
+    print("\(r.images) images, \(r.points) points → \(args[3])")
+    exit(0)
+}
 guard args.count >= 4, ["anchors", "pose"].contains(args[1]) else { print(usage); exit(2) }
 
 func keyframes(_ store: SessionStore, _ xfeat: XFeatModel) throws -> [(pose: Pose, keypoints: DescribedKeypoints)] {

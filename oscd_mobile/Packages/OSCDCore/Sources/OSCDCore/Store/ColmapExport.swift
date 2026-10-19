@@ -1,0 +1,148 @@
+import CoreGraphics
+import Foundation
+import ImageIO
+import simd
+
+/// A recorded scan as a COLMAP text model (PINHOLE camera, ARKit poses, LiDAR points), the input splatx
+/// trains the reference from. A line-for-line port of tools/session_to_colmap.py so the phone and the
+/// Mac build their models from the same data.
+public enum ColmapExport {
+    public struct Point: Equatable {
+        public var xyz: SIMD3<Double>
+        public var rgb: SIMD3<UInt8>
+    }
+
+    public struct Result: Equatable {
+        public let images: Int
+        public let points: Int
+    }
+
+    /// Writes `dir/images/<id>.png` and `dir/sparse/0/{cameras,images,points3D}.txt`.
+    @discardableResult
+    public static func write(session: SessionStore, to dir: URL, voxel: Double = 0.004) throws -> Result {
+        let m = session.manifest
+        let K = m.intrinsics
+        let fm = FileManager.default
+        let images = dir.appendingPathComponent("images"), sparse = dir.appendingPathComponent("sparse/0")
+        try fm.createDirectory(at: images, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sparse, withIntermediateDirectories: true)
+
+        var imageLines = "", points: [Point] = []
+        for (n, kf) in m.keyframes.enumerated() {
+            let rgb = try session.array(.keyframes, id: kf.id, name: "rgb").uint8()
+            let (depth, conf) = try session.depth(.keyframes, id: kf.id)
+            let name = String(format: "%06d.png", kf.id)
+            try writePNG(rgb: rgb, width: K.width, height: K.height, to: images.appendingPathComponent(name))
+            let (R, t) = worldToCamera(arkitCameraToWorld: kf.arkitCameraToWorld)
+            let q = qvec(R)
+            imageLines += "\(n + 1) \(q.x) \(q.y) \(q.z) \(q.w) \(t.x) \(t.y) \(t.z) 1 \(name)\n\n"
+            points += lidarPoints(depth: depth, confidence: conf, depthWidth: m.depthWidth, depthHeight: m.depthHeight,
+                                  intrinsics: K, arkitCameraToWorld: kf.arkitCameraToWorld, rgb: rgb)
+        }
+        if let roi = m.roi { points = cropAndDedupe(points, roi: roi, voxel: voxel) } else { points = dedupe(points, voxel: voxel) }
+
+        try "1 PINHOLE \(K.width) \(K.height) \(K.f) \(K.f) \(K.cx) \(K.cy)\n"
+            .write(to: sparse.appendingPathComponent("cameras.txt"), atomically: true, encoding: .utf8)
+        try imageLines.write(to: sparse.appendingPathComponent("images.txt"), atomically: true, encoding: .utf8)
+        var pointLines = ""
+        pointLines.reserveCapacity(points.count * 64)
+        for (i, p) in points.enumerated() {
+            pointLines += "\(i + 1) \(p.xyz.x) \(p.xyz.y) \(p.xyz.z) \(p.rgb.x) \(p.rgb.y) \(p.rgb.z) 0\n"
+        }
+        try pointLines.write(to: sparse.appendingPathComponent("points3D.txt"), atomically: true, encoding: .utf8)
+        return Result(images: m.keyframes.count, points: points.count)
+    }
+
+    /// ARKit camera-to-world (column-major) → OpenCV-axes camera-to-world → its inverse (R, t).
+    static func cameraToWorld(_ v: [Float]) -> simd_double4x4 {
+        let m = simd_double4x4(columns: (SIMD4(Double(v[0]), Double(v[1]), Double(v[2]), Double(v[3])),
+                                         SIMD4(Double(v[4]), Double(v[5]), Double(v[6]), Double(v[7])),
+                                         SIMD4(Double(v[8]), Double(v[9]), Double(v[10]), Double(v[11])),
+                                         SIMD4(Double(v[12]), Double(v[13]), Double(v[14]), Double(v[15]))))
+        return m * simd_double4x4(diagonal: SIMD4(1, -1, -1, 1))
+    }
+
+    static func worldToCamera(arkitCameraToWorld v: [Float]) -> (R: simd_double3x3, t: SIMD3<Double>) {
+        let c2w = cameraToWorld(v)
+        let Rc = simd_double3x3(SIMD3(c2w[0].x, c2w[0].y, c2w[0].z), SIMD3(c2w[1].x, c2w[1].y, c2w[1].z),
+                                SIMD3(c2w[2].x, c2w[2].y, c2w[2].z))
+        let R = Rc.transpose
+        return (R, -(R * SIMD3(c2w[3].x, c2w[3].y, c2w[3].z)))
+    }
+
+    /// Rotation matrix → COLMAP (qw, qx, qy, qz) as (x, y, z, w) of the SIMD4. session_to_colmap.rot_to_qvec.
+    static func qvec(_ R: simd_double3x3) -> SIMD4<Double> {
+        func m(_ r: Int, _ c: Int) -> Double { R[c][r] }
+        let tr = m(0, 0) + m(1, 1) + m(2, 2)
+        if tr > 0 {
+            let s = 0.5 / (tr + 1).squareRoot()
+            return SIMD4(0.25 / s, (m(2, 1) - m(1, 2)) * s, (m(0, 2) - m(2, 0)) * s, (m(1, 0) - m(0, 1)) * s)
+        }
+        let diag = [m(0, 0), m(1, 1), m(2, 2)]
+        let i = diag.firstIndex(of: diag.max()!)!, j = (i + 1) % 3, k = (i + 2) % 3
+        let s = 2 * (1 + m(i, i) - m(j, j) - m(k, k)).squareRoot()
+        var q = [0.0, 0.0, 0.0, 0.0]
+        q[0] = (m(k, j) - m(j, k)) / s
+        q[1 + i] = 0.25 * s
+        q[1 + j] = (m(j, i) + m(i, j)) / s
+        q[1 + k] = (m(k, i) + m(i, k)) / s
+        return SIMD4(q[0], q[1], q[2], q[3])
+    }
+
+    /// High-confidence LiDAR depth → world points, coloured from the nearest working-resolution pixel.
+    static func lidarPoints(depth: [Float], confidence: [UInt8], depthWidth dw: Int, depthHeight dh: Int,
+                            intrinsics K: Intrinsics, arkitCameraToWorld v: [Float], rgb: [UInt8]) -> [Point] {
+        let c2w = cameraToWorld(v)
+        let s = Double(dw) / Double(K.width)
+        let fd = Double(K.f) * s, cxd = (Double(K.cx) + 0.5) * s - 0.5, cyd = (Double(K.cy) + 0.5) * s - 0.5
+        var out: [Point] = []
+        out.reserveCapacity(dw * dh)
+        for v in 0..<dh {
+            for u in 0..<dw {
+                let i = v * dw + u
+                let z = Double(depth[i])
+                guard confidence[i] >= 2, z.isFinite, z > 0 else { continue }
+                let cam = SIMD4((Double(u) - cxd) / fd * z, (Double(v) - cyd) / fd * z, z, 1)
+                let w = c2w * cam
+                // np.round rounds half to even.
+                let uw = min(max(Int(((Double(u) + 0.5) / s - 0.5).rounded(.toNearestOrEven)), 0), K.width - 1)
+                let vw = min(max(Int(((Double(v) + 0.5) / s - 0.5).rounded(.toNearestOrEven)), 0), K.height - 1)
+                let p = (vw * K.width + uw) * 3
+                out.append(Point(xyz: SIMD3(w.x, w.y, w.z), rgb: SIMD3(rgb[p], rgb[p + 1], rgb[p + 2])))
+            }
+        }
+        return out
+    }
+
+    /// Keep points inside the region, then one point per voxel: the first, in sorted voxel order
+    /// (np.unique(..., axis=0, return_index=True)).
+    static func cropAndDedupe(_ pts: [Point], roi: AABB, voxel: Double) -> [Point] {
+        let lo = SIMD3<Double>(roi.min), hi = SIMD3<Double>(roi.max)
+        return dedupe(pts.filter { all($0.xyz .>= lo) && all($0.xyz .<= hi) }, voxel: voxel)
+    }
+
+    static func dedupe(_ pts: [Point], voxel: Double) -> [Point] {
+        var first: [SIMD3<Int64>: Int] = [:]
+        for (i, p) in pts.enumerated() {
+            let key = SIMD3<Int64>(Int64((p.xyz.x / voxel).rounded(.down)), Int64((p.xyz.y / voxel).rounded(.down)),
+                                   Int64((p.xyz.z / voxel).rounded(.down)))
+            if first[key] == nil { first[key] = i }
+        }
+        return first.sorted { a, b in
+            a.key.x != b.key.x ? a.key.x < b.key.x : a.key.y != b.key.y ? a.key.y < b.key.y : a.key.z < b.key.z
+        }.map { pts[$0.value] }
+    }
+
+    static func writePNG(rgb: [UInt8], width: Int, height: Int, to url: URL) throws {
+        let data = Data(rgb) as CFData
+        guard let provider = CGDataProvider(data: data),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 24, bytesPerRow: width * 3,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+            throw SessionStore.StoreError.missingFile("could not encode \(url.lastPathComponent)")
+        }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw SessionStore.StoreError.missingFile("could not write \(url.lastPathComponent)") }
+    }
+}

@@ -7,6 +7,8 @@ public enum CuesB {
         public var depthMinTol: Float = 0.01
         public var depthRelTol: Float = 0.02
         public var depthRamp: Float = 0.02
+        /// D13: subtract the frame's median (D_live − D_ren) over judged pixels before the tolerance.
+        public var alignDepthOffset = true
         public var gainAgreeDepth: Float = 0.01
         public var gainMinPixels = 500
         public var blurSigma: Float = 1
@@ -35,13 +37,20 @@ public enum CuesB {
         return out
     }
 
-    /// C_depth = clamp((|D_live − D_ren| − τ) / ramp, 0, 1) with τ = max(1 cm, 2%·D_ren).
+    /// C_depth = clamp((|D_live − D_ren − o| − τ) / ramp, 0, 1) with τ = max(1 cm, 2%·D_ren) and o the
+    /// frame's median D_live − D_ren over judged pixels (D13; o = 0 when alignDepthOffset is off).
     public static func depthCue(live: [Float], rendered: [Float], valid: [Bool],
                                 params p: Params = Params()) -> (cue: [Float], sign: [Int8]) {
         var cue = [Float](repeating: 0, count: live.count), sign = [Int8](repeating: 0, count: live.count)
-        for i in 0..<live.count where valid[i] && live[i].isFinite && rendered[i].isFinite && rendered[i] > 0 {
+        let judged = (0..<live.count).filter { valid[$0] && live[$0].isFinite && rendered[$0].isFinite && rendered[$0] > 0 }
+        var offset: Float = 0
+        if p.alignDepthOffset, !judged.isEmpty {
+            let d = judged.map { live[$0] - rendered[$0] }.sorted()
+            offset = d.count % 2 == 1 ? d[d.count / 2] : (d[d.count / 2 - 1] + d[d.count / 2]) / 2
+        }
+        for i in judged {
             let tau = max(p.depthMinTol, p.depthRelTol * rendered[i])
-            let d = live[i] - rendered[i]
+            let d = live[i] - rendered[i] - offset
             cue[i] = min(1, max(0, (abs(d) - tau) / p.depthRamp))
             if cue[i] > 0 { sign[i] = d < 0 ? 1 : -1 }
         }

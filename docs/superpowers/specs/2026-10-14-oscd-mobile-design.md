@@ -265,6 +265,7 @@ RANSAC (2,000 tiny LM solves) runs batched on the GPU, and mini-BA runs on the C
 | D9 | 6,144 keypoints, 1/4 resolution | Reduced only if the spike requires it, and recorded in the spike report | Performance |
 | D10 | Principal point at the image centre | ARKit's calibrated principal point | The iPhone's principal point is off-centre by a few pixels; using the centre would add pose error |
 | D12 | XFeat NMS takes the top 1.5·top_k heatmap values; when there are fewer real local maxima, the rest are zero-valued "junk" positions whose positive scores can push low-scoring real keypoints out of the final top_k | Only real local maxima compete for the top_k, so a few more tail keypoints survive (3,668 vs 3,636 on a test image) | Which junk positions CUDA `topk` returns is implementation-defined and can't be reproduced. The top-scoring keypoints, the ones matching relies on, are identical. |
+| D13 | (Method B, not O-SCD) `C_depth` thresholds `|D_live − D_ren|` directly | The frame's median `D_live − D_ren` over judged pixels is subtracted first | LiDAR reads about 1 cm deeper than the reference's expected depth everywhere (median 0.6–1.2 cm on Scans 4 and 5). With τ = 1 cm, that bias gave a small positive depth cue on most of the table, and fusion turned it into 84.6 % changed. With alignment: 37.1 % (Scan 4 → Scan 5) and 17.3 % on an unchanged pair (A: 11.7 %). |
 
 ### 6.8 Source
 The full extraction report, with file:line citations, is in [`oscd_mobile/docs/oscd_code_reference.md`](../../../oscd_mobile/docs/oscd_code_reference.md).

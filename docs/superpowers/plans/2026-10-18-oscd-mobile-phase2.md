@@ -63,3 +63,11 @@
 ## Ledger
 (One line per finished task: commits, checks run, results.)
 - Task 1: done. `ColmapExport` + 4 tests (66/66 pass, 11 skipped without Sol fixtures). Parity with `session_to_colmap.py` on Scan 4: cameras identical, 47 poses within 1.8e-7, 100,003 points within 3e-8 m with identical colours, PNGs identical. Ruling: pose test tolerance 1e-6, not 1e-9, because ARKit poses are Float.
+- Task 2: done. On the phone, Scan 4 exported in 0.5 s and trained 3,000 iterations in **41.3 s** (95,427 Gaussians; Mac: 47 s, 95,360). Detect A with the phone-built model: 28/47 placed, 16.7 % changed (Mac model: 28/47, 16.8 %).
+- Task 3: done. With fusion on its own thread, a placed frame now takes 527 ms end to end with A and B both running (was 674 ms with A alone). Fusion itself takes 490–540 ms per frame when both change models share the GPU.
+- Task 4: done, with ruling D13. The first B run flagged 84.6 %. Mac tool: LiDAR reads 0.6–1.2 cm deeper than the expected depth, so C_depth fired on 56–63 % of pixels, while C_color fired on 0 % of the unchanged frame. Ruling D13: per-frame median depth offset alignment (test `testDepthCueRemovesTheFramesMedianOffset`, 69/69). Results after the ruling:
+  - Scan 4 → Scan 5: A 16.7 %, B 37.1 %;
+  - Scan 4 → Scan 4 (nothing changed): A 11.7 %, B 17.3 %.
+
+  Cost if wrong: B stays noisier than A until the λ weights are tuned on labelled masks (spec §8.3).
+

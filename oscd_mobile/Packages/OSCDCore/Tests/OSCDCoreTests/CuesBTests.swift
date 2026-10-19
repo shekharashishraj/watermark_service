@@ -21,6 +21,21 @@ final class CuesBTests: XCTestCase {
         XCTAssertEqual(r.cue[3], 0)                                                     // Review Focus 4: NaN depth is ignored
     }
 
+    /// D13: LiDAR reads about 1 cm deeper than the reference's expected depth everywhere (measured on
+    /// Scan 4, frame 20, unchanged). The per-frame median offset is removed before the tolerance, so
+    /// only the changed patch fires.
+    func testDepthCueRemovesTheFramesMedianOffset() {
+        let rendered = [Float](repeating: 0.4, count: 100)
+        var live = rendered.map { $0 + 0.012 }
+        for i in 0..<10 { live[i] = 0.46 }                     // a 6 cm change on 10 % of the pixels
+        let valid = [Bool](repeating: true, count: 100)
+        let aligned = CuesB.depthCue(live: live, rendered: rendered, valid: valid).cue
+        XCTAssertEqual(aligned[50], 0)
+        XCTAssertEqual(aligned[0], 1, accuracy: 1e-5)          // 4.8 cm after the offset: past τ + ramp
+        var raw = CuesB.Params(); raw.alignDepthOffset = false
+        XCTAssertGreaterThan(CuesB.depthCue(live: live, rendered: rendered, valid: valid, params: raw).cue[50], 0)
+    }
+
     /// Review Focus 4: low-confidence or zero LiDAR depth becomes NaN, never a 0 m surface.
     func testUpsampleDepthDropsLowConfidence() {
         let d = CuesB.upsampleDepth([0.5, 0.0, 0.7, 0.8], confidence: [2, 2, 1, 2], width: 2, height: 2, toWidth: 4, toHeight: 4)

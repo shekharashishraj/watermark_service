@@ -273,3 +273,18 @@ index 0cb65be..6e2e26c 100644
              self.extractor = self.extractor.half().cuda().eval()
  
              state_dict = copy.deepcopy(self.extractor.state_dict())
+diff --git a/submodules/diff-gaussian-rasterization_fastgs/cuda_rasterizer/backward.cu b/submodules/diff-gaussian-rasterization_fastgs/cuda_rasterizer/backward.cu
+index 7c55dbf..33f0161 100755
+--- a/submodules/diff-gaussian-rasterization_fastgs/cuda_rasterizer/backward.cu
++++ b/submodules/diff-gaussian-rasterization_fastgs/cuda_rasterizer/backward.cu
+@@ -875,6 +875,10 @@ void BACKWARD::render(
+ 	float* dL_dcolors)
+ {
+ 	const int THREADS = 32;
++	// No buckets means no visible Gaussians in this view, so there is nothing to back-propagate.
++	// Launching with a zero-sized grid fails with "invalid configuration argument".
++	if (B == 0)
++		return;
+ 	PerGaussianRenderCUDA<NUM_CHAFFELS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(
+ 		ranges,
+ 		point_list,

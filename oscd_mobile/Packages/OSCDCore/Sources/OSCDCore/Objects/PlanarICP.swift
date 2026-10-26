@@ -19,27 +19,27 @@ public enum PlanarICP {
         public var inlierDistance: Float = 0.02
         /// Nearest neighbours farther than this are not paired.
         public var maxPairDistance: Float = 0.08
-        /// Source points used while iterating (evenly strided); the inlier share still uses every point.
+        /// Target points used while iterating (spread evenly through the array); the source grid and the inlier share use every point.
         public var maxIterationPoints = 600
         public init() {}
     }
 
     /// Rigid planar motion (translation + yaw about +y) taking `source` (the reference surface) onto `target` (LiDAR now).
-    /// Non-finite points are dropped first. nil when either set then has fewer than `minPoints`, or when any
-    /// reported number would not be finite.
+    /// Non-finite points are dropped first. nil when either set then has fewer than `minPoints`, when the config is
+    /// unusable (`nnVoxel` <= 0, `iterations` < 0, `yawCandidates` < 1), or when any reported number would not be finite.
     public static func fit(source: [SIMD3<Float>], target: [SIMD3<Float>], config: Config = Config()) -> Motion? {
         let src = source.filter(isFinite), tgt = target.filter(isFinite)
-        guard src.count >= config.minPoints, tgt.count >= config.minPoints, config.yawCandidates > 0 else { return nil }
+        guard config.nnVoxel > 0, config.iterations >= 0, config.yawCandidates >= 1,
+              src.count >= config.minPoints, tgt.count >= config.minPoints else { return nil }
 
         let cs = centroid(src), ct = centroid(tgt)
-        let stride = max(1, src.count / max(1, config.maxIterationPoints))
-        let iterSrc = Swift.stride(from: 0, to: src.count, by: stride).map { src[$0] }
-        let grid = VoxelHash(points: tgt, cell: config.nnVoxel)
+        let iterTgt = iterationSample(tgt, cap: config.maxIterationPoints)
+        let srcGrid = VoxelHash(points: src, cell: config.nnVoxel), grid = VoxelHash(points: tgt, cell: config.nnVoxel)
 
         var candidates: [State] = []
         for k in 0..<config.yawCandidates {
             let start = State(yaw: 360 * Float(k) / Float(config.yawCandidates), translation: ct - cs, rms: .infinity)
-            candidates.append(refine(start, source: iterSrc, grid: grid, cs: cs, config: config))
+            candidates.append(refine(start, targets: iterTgt, sourceGrid: srcGrid, cs: cs, config: config))
         }
         guard let best = candidates.min(by: { $0.rms < $1.rms }), best.rms.isFinite else { return nil }
 
@@ -72,6 +72,13 @@ public enum PlanarICP {
 
     // MARK: - Internals
 
+    /// At most `cap` points, spread evenly through the array. The step is fractional (`i·count/cap`) rather than a
+    /// whole stride, so an array built in pairs or rows is not sampled at one parity (which could drop whole faces).
+    static func iterationSample(_ pts: [SIMD3<Float>], cap: Int) -> [SIMD3<Float>] {
+        let cap = max(1, cap)
+        return pts.count <= cap ? pts : (0..<cap).map { pts[$0 * pts.count / cap] }
+    }
+
     private struct State { var yaw: Float; var translation: SIMD3<Float>; var rms: Float }
 
     private static func isFinite(_ p: SIMD3<Float>) -> Bool { p.x.isFinite && p.y.isFinite && p.z.isFinite }
@@ -95,17 +102,20 @@ public enum PlanarICP {
     }
 
     /// Trimmed point-to-point ICP from `start`; the returned RMS is that of the trimmed pairs under the final motion.
-    private static func refine(_ start: State, source: [SIMD3<Float>], grid: VoxelHash, cs: SIMD3<Float>, config: Config) -> State {
+    /// Each target point is pulled back into the source frame and paired with its nearest source point, so a target
+    /// that sees only part of the object (LiDAR from one side) is matched without dragging the unseen source half in.
+    private static func refine(_ start: State, targets: [SIMD3<Float>], sourceGrid: VoxelHash, cs: SIMD3<Float>, config: Config) -> State {
         var s = start
         let radius = Int((config.maxPairDistance / config.nnVoxel).rounded(.up))
+        var pairs: [(src: SIMD3<Float>, tgt: SIMD3<Float>, d2: Float)] = []
+        pairs.reserveCapacity(targets.count)
         for iteration in 0...config.iterations {
-            let R = rotationY(s.yaw)
-            var pairs: [(src: SIMD3<Float>, tgt: SIMD3<Float>, d2: Float)] = []
-            pairs.reserveCapacity(source.count)
-            for p in source {
-                let moved = R * (p - cs) + cs + s.translation
-                if let q = grid.nearest(to: moved, maxRing: radius, maxDistance: config.maxPairDistance) {
-                    pairs.append((p, q, simd_distance_squared(moved, q)))
+            let Rinv = rotationY(s.yaw).transpose
+            pairs.removeAll(keepingCapacity: true)
+            for q in targets {
+                let back = Rinv * (q - cs - s.translation) + cs
+                if let p = sourceGrid.nearest(to: back, maxRing: radius, maxDistance: config.maxPairDistance) {
+                    pairs.append((p, q, simd_distance_squared(back, p)))
                 }
             }
             guard pairs.count >= config.minPoints else { s.rms = .infinity; return s }
@@ -131,14 +141,22 @@ public enum PlanarICP {
         return s
     }
 
-    /// Nearest-neighbour lookup through a hash of voxel cells.
+    /// Nearest-neighbour lookup through a hash of voxel cells. Points are stored sorted by cell in one flat array;
+    /// the hash maps a cell to its slice.
     private struct VoxelHash {
         let cell: Float
-        var cells: [Int: [SIMD3<Float>]] = [:]
+        private var points: [SIMD3<Float>] = []
+        private var slices: [Int: Range<Int>] = [:]
 
-        init(points: [SIMD3<Float>], cell: Float) {
+        init(points all: [SIMD3<Float>], cell: Float) {
             self.cell = cell
-            for p in points { cells[VoxelHash.key(VoxelHash.index(p, cell)), default: []].append(p) }
+            let keyed = all.map { (key: VoxelHash.key(VoxelHash.index($0, cell)), point: $0) }.sorted { $0.key < $1.key }
+            points = keyed.map(\.point)
+            var start = 0
+            for k in 1..<(keyed.count + 1) where k == keyed.count || keyed[k].key != keyed[start].key {
+                slices[keyed[start].key] = start..<k
+                start = k
+            }
         }
 
         static func index(_ p: SIMD3<Float>, _ cell: Float) -> SIMD3<Int> {
@@ -151,7 +169,9 @@ public enum PlanarICP {
             return ((i.x + 0x100000) & m) << 42 | ((i.y + 0x100000) & m) << 21 | ((i.z + 0x100000) & m)
         }
 
-        /// The closest stored point within `maxDistance`, scanning shells of cells outward until nothing nearer can exist.
+        /// The closest stored point within `maxDistance`. Cells are scanned in growing shells; after shell r the
+        /// unscanned points lie outside the (2r+1)^3 block of cells, so the search stops as soon as the best hit is
+        /// nearer than the faces of that block (or the faces are already beyond `maxDistance`).
         func nearest(to p: SIMD3<Float>, maxRing: Int, maxDistance: Float) -> SIMD3<Float>? {
             let c = VoxelHash.index(p, cell)
             var best: SIMD3<Float>?, bestD2 = maxDistance * maxDistance
@@ -160,15 +180,17 @@ public enum PlanarICP {
                     // Interior of the shell is already scanned: only the faces touch ring r.
                     let step = (abs(dx) == r || abs(dy) == r) ? 1 : max(1, 2 * r)
                     for dz in Swift.stride(from: -r, through: r, by: step) {
-                        guard let pts = cells[VoxelHash.key(SIMD3<Int>(c.x + dx, c.y + dy, c.z + dz))] else { continue }
-                        for q in pts {
-                            let d2 = simd_distance_squared(q, p)
-                            if d2 <= bestD2 { bestD2 = d2; best = q }
+                        guard let slice = slices[VoxelHash.key(SIMD3<Int>(c.x + dx, c.y + dy, c.z + dz))] else { continue }
+                        for k in slice {
+                            let d2 = simd_distance_squared(points[k], p)
+                            if d2 <= bestD2 { bestD2 = d2; best = points[k] }
                         }
                     }
                 } }
-                // Everything not yet scanned is at least r cells away.
-                if bestD2 <= (Float(r) * cell) * (Float(r) * cell), best != nil { break }
+                // Distance from p to the nearest face of the scanned block bounds everything not yet scanned.
+                let lo = (SIMD3<Float>(c &- r) * cell), hi = (SIMD3<Float>(c &+ (r + 1)) * cell)
+                let bound = min((p - lo).min(), (hi - p).min())
+                if bound * bound >= bestD2 { break }
             }
             return best
         }

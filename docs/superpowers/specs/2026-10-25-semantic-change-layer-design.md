@@ -197,7 +197,9 @@ Source: the `left` instance's points (reference surface). Target: the `arrived` 
 Motion model: translation in xz, free small y translation, rotation **about +y** (yaw), taken about the source
 centroid (`p' = R_y(yaw)·(p − c_s) + c_s + translation`, so `translation` is the displacement of the source centroid).
 1. Initialise translation from centroids; try 12 yaw candidates (0°, 30°, …) and keep the lowest RMS.
-2. 20 iterations of point-to-point ICP, nearest neighbours via the voxel grid, trimmed to the best 80 % of pairs
+2. 20 iterations of point-to-point ICP, nearest neighbours via the voxel grid (each target point is pulled back
+   into the source frame and paired with its nearest source point, so a one-sided LiDAR target fits), trimmed to
+   the best 80 % of pairs
    (the first 10 iterations keep every pair: trimming at the start traps the fit on flat faces).
 3. Report `translation`, `horizontalDistance`, `yawDeg`, `fitRMS`, `inlierFraction`.
 4. Candidates whose final RMS is within 10 % of the best (plus 2 mm, so an exact copy is not out-voted by sampling

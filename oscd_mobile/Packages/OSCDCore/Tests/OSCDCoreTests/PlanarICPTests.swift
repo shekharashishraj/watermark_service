@@ -92,6 +92,47 @@ final class PlanarICPTests: XCTestCase {
         assertTranslation(m, offset, accuracy: 0.02)
     }
 
+    func testPartialOverlapWithYawStillFits() throws {
+        let src = boxSurface(size: box, step: 0.005)
+        let target = moved(src, yawDeg: 40, by: offset).filter { $0.z <= offset.z }
+        let m = try XCTUnwrap(PlanarICP.fit(source: src, target: target))
+        XCTAssertEqual(try XCTUnwrap(m.yawDeg), 40, accuracy: 10)
+        assertTranslation(m, offset, accuracy: 0.02)
+    }
+
+    /// The turn is about the source centroid, so `translation` is the centroid's displacement wherever the box sits.
+    func testRotatesAboutTheSourceCentroid() throws {
+        let c = SIMD3<Float>(0.3, 0.02, -0.2), shift = SIMD3<Float>(0.15, 0.01, 0.05)
+        let src = boxSurface(size: box, step: 0.005).map { $0 + c }
+        let R = PlanarICP.rotationY(40)
+        let target = src.map { R * ($0 - c) + c + shift }
+        let m = try XCTUnwrap(PlanarICP.fit(source: src, target: target))
+        assertTranslation(m, shift, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(m.yawDeg), 40, accuracy: 5)
+    }
+
+    func testUnusableConfigGivesNil() {
+        let src = boxSurface(size: box, step: 0.005)
+        let target = moved(src, yawDeg: 0, by: offset)
+        var c = PlanarICP.Config(); c.nnVoxel = 0
+        XCTAssertNil(PlanarICP.fit(source: src, target: target, config: c))
+        c = PlanarICP.Config(); c.iterations = -1
+        XCTAssertNil(PlanarICP.fit(source: src, target: target, config: c))
+        c = PlanarICP.Config(); c.yawCandidates = 0
+        XCTAssertNil(PlanarICP.fit(source: src, target: target, config: c))
+    }
+
+    /// `maxIterationPoints` is a hard cap, also between one and two times the cap, and the sample spans the array.
+    func testIterationPointCapIsHonoured() {
+        let pts = (0..<1199).map { SIMD3<Float>(Float($0), 0, 0) }
+        let sample = PlanarICP.iterationSample(pts, cap: 600)
+        XCTAssertEqual(sample.count, 600)
+        XCTAssertEqual(sample.first?.x, 0)
+        XCTAssertGreaterThan(sample.last?.x ?? 0, 1190)
+        XCTAssertEqual(PlanarICP.iterationSample(Array(pts.prefix(600)), cap: 600).count, 600)
+        XCTAssertEqual(Set(sample.map { Int($0.x) % 2 }).count, 2)
+    }
+
     /// Non-finite points are dropped before fitting; the fit uses the rest.
     func testNonFinitePointsAreIgnored() throws {
         var src = boxSurface(size: box, step: 0.005)

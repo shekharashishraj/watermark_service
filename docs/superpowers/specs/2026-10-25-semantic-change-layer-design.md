@@ -153,6 +153,8 @@ before-scan's high-confidence LiDAR inside the ROI, one point per 5 mm voxel (th
 (`BeforeDepth.points`, ≈ 58 000 points and ≈ 110 ms on Scan 4), splatted into each frame's view with a z-buffer of
 3 × 3 pixel splats (`BeforeDepth.splat`, ≈ 0.8 ms per frame on the phone; 84 % of a frame's valid pixels covered).
 A pixel where no point lands is no evidence: no sign, no left point, no gate pass; the model's dRen is not used there.
+So a hole in dBefore (≈ 16 % of a frame's valid pixels uncovered) can leave a real change with too few signed pixels
+and demote it to a `flat` hint, or keep it unconfirmed: a miss, not a wrong story.
 dRen and the render stay for the SAM2 feature and the colour histogram only (and for Methods A/B). Why: the model's
 depth over the sheet is off by a non-uniform 1–3 cm (per-frame median offset +4 … +162 mm on Scan 4 → 5, against
 −13 … +46 mm, mostly within ±10 mm, for the before-LiDAR), and no single per-frame offset absorbs it; both LiDARs come
@@ -178,11 +180,20 @@ key); each component yields a voxel set.
 the table are dropped: the `dLive` point for `arrived`/`flat`, the aligned reference point (dBefore + o) for `left`; a
 `flat` pixel is kept when either its `dLive` or its reference point clears the gate. The table height (`supportHeight`, world y) is the mode of y over the
 before-scan's high-confidence LiDAR points inside the ROI (`SupportPlane`: 1 cm histogram, refined by the median of
-the winning bin; ≤ 60 keyframes), computed once per run in Detect and in Live. Why: on Scan 4 → 5 and even on the
+the winning bin; ≤ 60 keyframes), computed once per run in Detect and in Live. **It needs evidence (R37):** the
+winning bin must hold **≥ 15 %** of the in-ROI points, else there is no reliable table height (a cluttered, tilted or
+non-tabletop scene spreads y over many bins); the share is logged (`semantic: support y = … m (share …%)`; Scan 4:
+52.5 % of 1.48 M points). **No gate, no layer (R35):** when the estimate is missing or under the floor, or the
+before-scan's LiDAR cannot be read (`SupportPlane` or `BeforeDepth.points` throws), the object layer is **off for
+that run**: Detect skips "Find objects" with the step saying why ("Off: no reliable table height in the before-scan
+…") and writes no `objects.json`; Live runs without a `SemanticStage` and its status line says why. Methods A/B and
+the rest of Detect and Live run as usual. The layer never runs without the gate, because without it the sheet
+itself becomes confirmed objects (below). Why: on Scan 4 → 5 and even on the
 unchanged Scan 4 → 4, Method B's final masks flag 17–37 % of the judged area, mostly the floral sheet, where LiDAR
 and the model's depth disagree by 10–50 mm (both signs); those regions became confirmed `removed`/`added` instances
 of up to ~2 000 voxels, which no confirmation floor removes without also removing the objects. A surface lying on
-the table is the sheet, not an object. Without a support height (nil) nothing is gated.
+the table is the sheet, not an object. (`TrackerConfig.supportHeight = nil` still means "no gate" for tests and the
+Mac replay's `--no-support`; the app never runs the layer that way, R35.)
 
 **Calibration on real frames (C1).** Both Detect pairs were dumped (`-dumpFrames YES`) and replayed on the Mac
 (`oscd-objects --sweep`) over four candidate input rules, each alone and combined: a frame gate skipping frames with
@@ -235,9 +246,14 @@ Score between a `left` instance L and an `arrived` instance A:
 score = 0.5·cos(feature_L, feature_A) + 0.3·histIntersection(L, A) + 0.2·sizeSim
 sizeSim = clamp(1 − |ln(voxels_L / voxels_A)| / ln 3, 0, 1)
 ```
-Assignment by Hungarian matching (n ≤ ~20; a simple O(n³) is fine). Thresholds (defaults, to be calibrated in
-§7): `score ≥ 0.55` → `moved`, `0.40–0.55` → `moved` with `confidence` low (drawn dashed, listed as "probably
-moved"), below → no match.
+Assignment by Hungarian matching (n ≤ ~20; a simple O(n³) is fine) **with an "unmatched" option (R36)**: the
+left × arrived matrix is padded to square so every left row can take a dummy column worth `matchLow` and every
+arrived column a dummy row worth 0 (dummy × dummy 0); the total is maximised and only real pairs with a finite
+score ≥ `matchLow` are kept; non-finite scores are never chosen. A pair s therefore beats leaving both unmatched
+exactly when s ≥ `matchLow`, and the assignment can no longer force a pair just to raise the total (without it,
+L1→A1 0.72, L1→A2 0.50, L2→A1 0.60, L2→A2 0.30 gave the cross pairs, 1.10, instead of L1→A1 + L2 removed + A2
+added, 0.72 + 0.40; Goal 6). Thresholds (defaults, to be calibrated in §7): `score ≥ 0.55` → `moved`,
+`0.40–0.55` → `moved` with `confidence` low (drawn dashed, listed as "probably moved"), below → no match.
 
 **Feature source for `left` (my call).** The render is a blurry splat, so its SAM2 features sit in a different
 domain from the live photo. **In Detect**, once a `left` instance is confirmed, the stage projects its points into
@@ -267,12 +283,19 @@ centroid (`p' = R_y(yaw)·(p − c_s) + c_s + translation`, so `translation` is 
    translation stays accurate. The ratio was calibrated on a seeded synthetic matrix (box, cube, sphere; full, half and
    both-halves views; 0 and 2 mm noise) whose decision boundary is narrow (ratios ≈ 1.57 must stay unknown, ≈ 1.62
    must report): a known risk to recheck on real LiDAR.
-Runs on the background queue when a pair is new or either instance grew by > 20 % since the last fit; a few
-hundred points, ≈ 10 ms.
+Runs on the background queue when a pair is new or either instance grew by > 20 % since its points were copied for
+the last fit (the counts are taken with the points, so growth during an asynchronous fit counts); up to 2 000 points
+per side, **60–350 ms per pair** measured (Release, Mac), off the per-frame path: Live fits on a `.utility` queue and
+the result lands in a later report; Detect fits once after the last frame. At Live's Stop the pairs still without a
+move are fitted on the tracker thread before the final report.
 
 ### 4.8 Step 6: naming (optional, behind a Settings toggle "Name objects", default on)
 Apple Vision `VNClassifyImageRequest` on a crop with a 20 % margin. Keep the top label if its confidence ≥ 0.3,
-else the event is "Object N". Labels are shown as hints ("Ball?" when confidence < 0.6). MobileCLIP is a later
+else the event is "Object N". **Tie-break (R34):** Vision lists a label's ancestors at (almost) its confidence
+("recreation", "sport", "ball" all 0.364 on Scan 4 → 5), so among the labels ≥ 0.3 within 0.02 of the top, the first
+in Vision's order that is not generic (recreation, sport, sports_equipment, structure, material, object, indoor,
+outdoor, textile, furniture, consumer_electronics, tool, container, art, people, animal, plant, food, clothing) wins;
+when every tied label is generic the top stays (`LabelChoice.pick`). Scan 4 → 5 now reads "Ball?". Labels are shown as hints ("Ball?" when confidence < 0.6). MobileCLIP is a later
 upgrade, not part of this.
 
 Crop sources and scheduling (my calls):
@@ -303,7 +326,8 @@ struct ObjectReport: Codable {
 }
 ```
 - Detect: `objects.json` in `<after>/detections/<before>/` next to `summary.json`. `DetectionResult` loads it.
-- Live: `Documents/preview/objects.json` rewritten on each change of the event list and at Stop; one
+- Live: `Documents/preview/objects.json` rewritten on each change of the event list and at Stop (Stop first waits
+  for fusion, so the last fused frame is ingested, then fits the moves still missing); one
   `objects:` line per update in `preview-log.txt` (for headless checks).
 - Launch argument `-detectObjects YES` on a Detect run prints the report to `app-log.txt`.
 
@@ -317,7 +341,9 @@ struct ObjectReport: Codable {
 - The list keeps its order (by first-seen) so rows do not jump between updates.
 
 ### 4.11 Detect results and 3D viewer
-- Results screen: an **Objects** section listing the events as in 4.10, with "Show in 3D".
+- Results screen: an **Objects** section listing the events as in 4.10, with "Show in 3D" (only when the
+  before-scan still has its 3D model); "No objects changed" when the report has no event; no section when the layer
+  was off for the run (R35) or the run predates the layer.
 - 3D viewer: opened on the **before-scan's** model with an `ObjectReport`; the world frame is the same, so centroids
   and boxes are projected with `OrbitCamera.pose` and `ModelViewer.intrinsics` and drawn as a SwiftUI `Canvas`
   overlay on the rendered image (no change to the splat renderer). Arrows old → new, boxes for added/removed,
@@ -420,6 +446,7 @@ Results go into a run report `oscd_mobile/docs/<date>_semantic_layer_runs.md`, a
 | Live matching without before-photo features is weaker | expected and shown as lower confidence; Detect gives the strong answer on the same scans |
 | Two objects that exchange places (Scan 4 → 5: ball and sunglasses swapped, ≈ 8 cm each) | their old footprints touch and merge into one `left` instance, so the left side mixes both and matching may prefer the wrong arrived partner; reported confidence stays low. Not solved in this version |
 | Thin objects (sunglasses, a phone lying flat) are invisible to the depth layer: LiDAR puts them 0–1 cm above the sheet, under the 2 cm gate (C1) | stated non-goal (§2.2); follow-up: a depth-free presence cue (live vs render SAM2 feature or colour distance against the surrounding sheet), or a local table height instead of one global support y (the after-frames' table varies by ±1–2 cm in world y) |
+| A confirmed object that gains a voxel within 2 cm of a vertical ROI face is dropped and reappears under a new id (list flicker) | known; revisit with ground truth |
 | Detect embedding cache (≈ 190 MB) on a full phone | written to `Caches`, deleted after the run; the run fails cleanly if the write fails |
 
 ## 9. Relation to O-SCD

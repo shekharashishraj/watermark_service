@@ -1,14 +1,14 @@
 # O-SCD Mobile, semantic change layer: runs, 2026-10-25
 
-Device: iPhone 17 Pro (iPhone18,1) · app "3D Changes" (Release) · branch `oscd-mobile/semantic-layer-app`, commits `38979ca6` (before-LiDAR reference, 2 cm gate), `74b9b1cb` (splat in Detect and Live), `4c25f287` (before-photo features), `027a2366` (naming) and the commit that adds this report · spec `docs/superpowers/specs/2026-10-25-semantic-change-layer-design.md`
+Device: iPhone 17 Pro (iPhone18,1) · app "3D Changes" (Release) · branch `oscd-mobile/semantic-layer-app`, commits `38979ca6` (before-LiDAR reference, 2 cm gate), `74b9b1cb` (splat in Detect and Live), `4c25f287` (before-photo features), `027a2366` (naming), `2b202583` (this report) and the review fixes `88bc2f1f` (matching may leave an object unmatched), `af09ad2f` (support-height evidence, layer off without it), `a211b263` (Live Stop and lifetime), `6fedb418` (splat guard, dump settings, label tie-break) · spec `docs/superpowers/specs/2026-10-25-semantic-change-layer-design.md`
 
 ## Summary
 
-- **The layer reports objects, not just masks.** On Scan 4 → Scan 5 (tennis ball and sunglasses moved) it reports exactly one event: the **tennis ball, moved 8.6 cm**, score **0.722**. On the unchanged Scan 4 → Scan 4 it reports **nothing**.
+- **The layer reports objects, not just masks.** On Scan 4 → Scan 5 (tennis ball and sunglasses moved) it reports exactly one event: the **tennis ball, moved 8.8 cm** (8.6 cm before the review fixes), score **0.722**, named **"Ball?"**. On the unchanged Scan 4 → Scan 4 it reports **nothing**.
 - **The sunglasses are not reported.** LiDAR sees them 0 to 1 cm above the sheet, under the 2 cm height gate (a stated non-goal, spec §2.2).
 - **Before-photo features lifted the ball's match score from 0.624 to 0.722** (0.722 to 0.723 in four runs): a removed object is now described by the before-scan's own photo of it instead of the model's render.
-- **Naming works but is not good yet.** Vision's top label for the ball is "Recreation" (36 %), a parent of "ball" at the same confidence. The event shows "Recreation?". See Naming.
-- **Cost in Detect is small.** "Find objects" takes 2.7 s of a 40 to 42 s run; the tracker's median ingest is 9 to 13 ms per frame.
+- **Naming now says "Ball?".** Vision gives "recreation", "sport", "ball" and "sports_equipment" the same 36 %; the tie-break (R34) skips the generic ones. It was "Recreation?" before. See Naming.
+- **Cost in Detect is small.** "Find objects" takes 2.6 to 2.9 s of a 30 to 42 s run; the tracker's median ingest is 8 to 13 ms per frame.
 - **Two checks need a person.** The Live view sweep and the ground-truth pair are marked **Pending** below. Nothing in those sections is measured.
 
 ## What the layer does now
@@ -25,20 +25,25 @@ Spec §4 in short; the app version as of this report.
 
 ## Detect, Scan 4 → Scan 5 and Scan 4 → Scan 4
 
-Final build, `-detectB YES -detectObjects YES`, Scan 4 (`2026-10-14T15-45-15Z`) as the before-scan. Files pulled from the phone: `B/objects.json`, `B/summary.json`, `summary.json` and `app-log.txt`.
+Final build (`6fedb418` plus the `-liveStopAfter` hook), `-detectB YES -detectObjects YES -dumpFrames YES`, Scan 4 (`2026-10-14T15-45-15Z`) as the before-scan. Files pulled from the phone: `B/objects.json`, `B/summary.json`, `summary.json`, `app-log.txt` and the dumped frames. In brackets: the build of `2b202583`, before the review fixes, where it differs.
 
 | | Scan 4 → Scan 5 | Scan 4 → Scan 4 |
 |---|---|---|
 | Camera placed | 28 / 47 | 47 / 47 |
 | A flagged / B flagged (judged area) | 16.7 % / 37.1 % | 11.7 % / 17.3 % |
-| Events (non-hint) | **1: Recreation? moved 9 cm** | **none** |
+| Support height, share of the before-scan's in-ROI LiDAR | −0.445 m, 52.5 % of 1.48 M points (floor 15 %) | the same |
+| Events (non-hint) | **1: Ball? moved 9 cm** (Recreation?) | **none** |
 | Score | **0.722** | – |
 | Voxels, left → arrived | 205 → 170 | – |
-| ICP translation (m) | (−0.086, −0.008, −0.006) | – |
-| ICP horizontal distance | 8.6 cm | – |
-| ICP RMS / inliers | 2.1 mm / 97 % | – |
+| ICP translation (m) | (−0.088, −0.008, −0.005) [(−0.086, −0.008, −0.006)] | – |
+| ICP horizontal distance | 8.8 cm [8.6 cm] | – |
+| ICP RMS / inliers | 2.0 mm / 97 % [2.1 mm] | – |
 | Yaw | not reported ("rotation unknown") | – |
-| Whole Detect run | 42.4 s | 40.2 s |
+| Whole Detect run | 30.0 s [42.4 s] | 35.6 s [40.2 s] |
+
+The run-to-run differences in the move (8.6 versus 8.8 cm) come from fusion, which is not deterministic: the dumped frames of this run replay on the Mac to the same voxels, placements and motion bit for bit (below). The whole-run times vary with the phone's thermal state; "Find objects" itself is 2.55 s and 2.86 s.
+
+**Mac replay of this run's dumps** (`oscd-objects --verbose`, the dumps in `~/Library/Caches/oscd-mobile/dumps/` replaced by these): Scan 4 → 5 gives the same single event, left 52 → arrived 1, 205 → 170 voxels, the same centroids and translation to the last bit; its score is 0.624 instead of 0.722 because the replay has no before-scan photo encoder (the `left` feature stays the render's). Scan 4 → 4: no events. The replay of the old dumps gave the same events before and after the matching fix (R36): in both pairs only one left × arrived pair (or none) is confirmed, so the opt-out never changed the assignment.
 
 Expected: Scan 4 → 5 has two moves (ball and sunglasses), Scan 4 → 4 none. **Got:** one of two, and none. No tape measure was used on these scans, so the 8.6 cm is not checked against a measured distance; the crops in C1 show the ball moving about 8 cm.
 
@@ -58,13 +63,13 @@ Scan 4 → 4 still has no event. The `left` feature is pooled from the before ke
 
 | Stage | Scan 4 → 5 (28 frames) | Scan 4 → 4 (47 frames) |
 |---|---|---|
-| Support height (once) | 150 ms | 136 ms |
-| Before-scan LiDAR cloud, 57 685 points (once) | 121 ms | 116 ms |
-| Before-LiDAR splat, per frame (median / max) | 0.8 / 1.1 ms | 0.9 / 1.3 ms |
-| Tracker ingest, median per frame | 13.3 ms | 9.4 ms |
-| Before-photo features | 115 ms | 0 ms (no `left` object) |
-| Naming (Vision) | 50 ms for 2 objects | 0 ms |
-| **Find objects, total** | **2.66 s** | **2.76 s** |
+| Support height (once) | 149 ms [150] | 142 ms [136] |
+| Before-scan LiDAR cloud, 57 685 points (once) | 121 ms | 119 ms [116] |
+| Before-LiDAR splat, per frame (median / max) | 0.8 / 1.1 ms | 0.8 / 1.2 ms [0.9 / 1.3] |
+| Tracker ingest, median per frame | 11.5 ms [13.3] | 8.3 ms [9.4] |
+| Before-photo features | 113 ms [115] | 0 ms (no `left` object) |
+| Naming (Vision) | 51 ms for 2 objects [50] | 0 ms |
+| **Find objects, total** | **2.55 s** [2.66] | **2.86 s** [2.76] |
 
 "Find objects" includes the `-detectObjects` diagnostics, so it is a slight overestimate.
 
@@ -77,8 +82,9 @@ Scan 4 → 5, naming on:
 | arrived (the ball, live) | 91 × 82 px | recreation 0.364, sport 0.364, ball 0.364, sports_equipment 0.364, food 0.061 |
 | left (the ball, before photo) | 154 × 76 px | recreation 0.337, sport 0.337, ball 0.334, sports_equipment 0.334, golf 0.141 |
 
-- **The event is labelled "Recreation", confidence 0.36**, shown as "Recreation? · moved 9 cm". The event takes the higher of its two objects' confidences (the arrived one).
-- Vision lists a label's ancestors with almost the same confidence as the label ("recreation" and "sport" above "ball"), and the code takes the top one. "Ball" is in the list, three places down, 0.001 lower. I did not add a mapping or a most-specific rule; that is a decision for the spec owner.
+- **The event is labelled "Ball", confidence 0.36**, shown as "Ball? · moved 9 cm". The event takes the higher of its two objects' confidences (the arrived one). Before the tie-break it was "Recreation?".
+- Vision lists a label's ancestors with almost the same confidence as the label ("recreation" and "sport" above "ball"). **Tie-break (R34, `LabelChoice.pick`):** among the labels ≥ 0.3 within 0.02 of the top, the first in Vision's order that is not a generic category (recreation, sport, sports_equipment, structure, material, object, indoor, outdoor, textile, furniture, consumer_electronics, tool, container, art, people, animal, plant, food, clothing) wins; if all tied labels are generic, the top stays. No mapping table.
+- In this run the left crop (the before photo) scored 0.229 for all four labels and got no label (under the 30 % floor).
 - **Run-to-run variation:** in three earlier runs the left crop scored 0.29 to 0.30 and got no label (under the 30 % floor), while the arrived one got "Recreation" 0.36. Fusion is not deterministic, so the best crop differs a little.
 - **Toggle off** (`-nameObjects NO`): the same run gives the same event with no label (shown as "Object N"), and "Naming" is 0 ms. The Settings switch writes the same key.
 - **Unchanged pair:** no event, so nothing to name.
@@ -140,6 +146,14 @@ The object layer adds, per frame: splat 0.8 ms + tracker ingest 13.3 ms = **abou
 
 `-viewObjects 2026-10-14T15-45-52Z` opens the 3D viewer over Scan 4's model with the latest saved detection: the log reads `viewer: objects 1 events`, which is the one event in `B/objects.json`. Touch interactions (tapping a row, "Show in 3D" from the results, how the arrow sits on the ball's old and new spots in Walk and Orbit mode) were not exercised.
 
+## Review fixes (2026-10-26)
+
+- **Matching may leave an object unmatched (R36).** The assignment gets a dummy "unmatched" option worth the low threshold (0.40) for every object, so it no longer pairs two unrelated changes just to raise the total. Example from the review: scores L1→A1 0.72, L1→A2 0.50, L2→A1 0.60, L2→A2 0.30 used to give two moves (0.50 and 0.60); now L1→A1 is a move, L2 removed and A2 added. Neither recorded pair has more than one confirmed left × arrived pair, so their events did not change (replays before and after are identical).
+- **The table height needs evidence (R37) and the layer needs the table (R35).** The densest 1 cm band must hold 15 % of the before-scan's in-ROI LiDAR points (Scan 4: 52.5 %). Without it, or when the before-scan's LiDAR cannot be read, Detect's "Find objects" reads "Off: …" and writes no `objects.json`, and Live runs without the object tracker and says why in its status line. Not exercised on the phone: no recorded scan falls under the floor.
+- **Live Stop keeps the last frame.** Stop now waits for fusion, ingests the frame still waiting, measures the moves still missing and writes `Documents/preview/objects.json` a last time. Checked with `-live YES -beforeScanID 2026-10-14T15-45-15Z -liveStopAfter 30`, the phone on a desk: 52 frames, none placed ("7 of 93 matches agree"), then `[status] Stopped` and `semantic: 0 frames ingested, 0 dropped`, no crash; no `objects.json`, as no frame was fused. The final report with a frame in flight still needs a person sweeping the table.
+- **A stopped Live run's late results are ignored**, so a quick Stop → Start no longer shows the old run's overlay or objects in the new one (not exercised on the phone).
+- **Smaller fixes:** points within 1 mm of the camera plane are skipped by the splat (a near-zero depth or a trap converting a huge projection); an asynchronous move fit records the voxel counts of when its points were copied; Live asks the tracker for unnamed objects only when the newest report has one; `pose.json` in dumps keeps the run's voxel floor and gate height for `oscd-objects`; the results show "No objects changed" for an empty report and "Show in 3D" only when the before-scan has its model.
+
 ## Pending: needs a person
 
 ### Live view sweep
@@ -151,7 +165,7 @@ The object layer adds, per frame: splat 0.8 ms + tracker ingest 13.3 ms = **abou
 | An objects line (`objects: n events · …`) appears after the third placed frame | yes | – |
 | An arrow for the ball (moved) in the overlay, dashed under 0.55 | yes | – |
 | Event list settles | within 3 updates after both positions have been seen | – |
-| Update interval, median | within 10 % of 0.724 s (the baseline from 2026-10-19, 35 placed frames, before the layer) | – |
+| Update interval, median | within 10 % of the Live baseline before the layer: 0.724 s (2026-10-19 phone log, 35 placed frames; the log is not in the repo) or 1.01 s (`docs/2026-10-19_phase2_runs.md`, the committed figure) | – |
 | `semantic: frame N · before-LiDAR splat … · ingest … ms` per frame | ingest ≤ 60 ms median | – |
 | `semantic: n frames ingested, m dropped · median ingest` at Stop | few dropped | – |
 | A name for the ball within the sweep (`naming:` lines) | at least the ball is named; a wrong name is shown with "?" | – |

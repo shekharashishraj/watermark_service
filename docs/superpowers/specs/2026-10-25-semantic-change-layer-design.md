@@ -197,14 +197,15 @@ Source: the `left` instance's points (reference surface). Target: the `arrived` 
 Motion model: translation in xz, free small y translation, rotation **about +y** (yaw), taken about the source
 centroid (`p' = R_y(yaw)·(p − c_s) + c_s + translation`, so `translation` is the displacement of the source centroid).
 1. Initialise translation from centroids; try 12 yaw candidates (0°, 30°, …) and keep the lowest RMS.
-2. 20 iterations of point-to-point ICP, nearest neighbours via the voxel grid (each target point is pulled back
-   into the source frame and paired with its nearest source point, so a one-sided LiDAR target fits), trimmed to
-   the best 80 % of pairs
-   (the first 10 iterations keep every pair: trimming at the start traps the fit on flat faces).
+2. 20 iterations of point-to-point ICP, nearest neighbours via the voxel grid, pairing in both directions (each
+   source point with its nearest target point, and each target point with its nearest source point), each set
+   trimmed to its best 80 % of pairs and the union solved together, so partial views on either side and clutter
+   in the target do not pull the fit. The first 10 iterations keep every pair: trimming at the start traps the fit
+   on flat faces.
 3. Report `translation`, `horizontalDistance`, `yawDeg`, `fitRMS`, `inlierFraction`.
-4. Candidates whose final RMS is within 10 % of the best (plus 2 mm, so an exact copy is not out-voted by sampling
-   error) are "equally good". If every one converged to the best yaw, or to the best yaw + 180°, within 15°,
-   `yawDeg` is the best yaw folded into (−90°, 90°] (a box turned 40° and one turned 220° look alike; the smaller
+4. Candidates whose final RMS is within 10 % of the best (but never less than a 2 mm band, so an exact copy is not
+   out-voted by sampling error) are "equally good". If every one converged to the best yaw, or to the best yaw + 180°, within
+   15°, `yawDeg` is the best yaw folded into (−90°, 90°] (a box turned 40° and one turned 220° look alike; the smaller
    rotation is reported, the translation is unchanged). Otherwise (a ball, a cylinder, a cube) `yawDeg` is `nil`
    and the UI says "rotation unknown". Any non-finite result makes the whole fit `nil`.
 Runs on the background queue when a pair is new or either instance grew by > 20 % since the last fit; a few

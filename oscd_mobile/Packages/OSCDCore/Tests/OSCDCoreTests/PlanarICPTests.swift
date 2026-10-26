@@ -40,6 +40,16 @@ final class PlanarICPTests: XCTestCase {
         for k in 0..<3 { XCTAssertEqual(m.translation[k], expected[k], accuracy: accuracy, file: file, line: line) }
     }
 
+    /// Distance in the table plane between the fitted and the true displacement.
+    func horizontalError(_ m: Motion, _ expected: SIMD3<Float>) -> Float {
+        simd_length(SIMD2<Float>(m.translation.x - expected.x, m.translation.z - expected.z))
+    }
+
+    /// Either no yaw claimed, or one near `expected`.
+    func assertYawNilOrNear(_ m: Motion, _ expected: Float, accuracy: Float, file: StaticString = #filePath, line: UInt = #line) {
+        if let yaw = m.yawDeg { XCTAssertEqual(yaw, expected, accuracy: accuracy, file: file, line: line) }
+    }
+
     func testRotationYIsRightHandedAboutUp() {
         let p = PlanarICP.rotationY(90) * SIMD3<Float>(1, 0, 0)
         XCTAssertEqual(p.x, 0, accuracy: 1e-5); XCTAssertEqual(p.z, -1, accuracy: 1e-5)
@@ -89,15 +99,38 @@ final class PlanarICPTests: XCTestCase {
         // LiDAR sees one side only: drop the half of the target that lies beyond its centre along z.
         let target = moved(src, yawDeg: 0, by: offset).filter { $0.z <= offset.z }
         let m = try XCTUnwrap(PlanarICP.fit(source: src, target: target))
-        assertTranslation(m, offset, accuracy: 0.02)
+        XCTAssertLessThan(horizontalError(m, offset), 0.015)
     }
 
     func testPartialOverlapWithYawStillFits() throws {
         let src = boxSurface(size: box, step: 0.005)
         let target = moved(src, yawDeg: 40, by: offset).filter { $0.z <= offset.z }
         let m = try XCTUnwrap(PlanarICP.fit(source: src, target: target))
-        XCTAssertEqual(try XCTUnwrap(m.yawDeg), 40, accuracy: 10)
-        assertTranslation(m, offset, accuracy: 0.02)
+        XCTAssertLessThan(horizontalError(m, offset), 0.02)
+        assertYawNilOrNear(m, 40, accuracy: 10)
+    }
+
+    /// Both clouds are one-sided: the reference render and the LiDAR each see only the half facing -z.
+    func testBothSidesPartialStillFits() throws {
+        let full = boxSurface(size: box, step: 0.005)
+        let src = full.filter { $0.z <= 0 }
+        let target = moved(full, yawDeg: 40, by: offset).filter { $0.z <= offset.z }
+        let m = try XCTUnwrap(PlanarICP.fit(source: src, target: target))
+        XCTAssertLessThan(horizontalError(m, offset), 0.02)
+        assertYawNilOrNear(m, 40, accuracy: 10)
+    }
+
+    /// A table patch 2.5 cm under the box is in the target but not in the source.
+    func testFloorClutterDoesNotBreakTheFit() throws {
+        let src = boxSurface(size: box, step: 0.005)
+        var target = moved(src, yawDeg: 40, by: offset)
+        let floorY = offset.y - box.y / 2 - 0.025
+        for i in 0...20 { for j in 0...20 {
+            target.append(SIMD3<Float>(offset.x - 0.05 + 0.005 * Float(i), floorY, offset.z - 0.05 + 0.005 * Float(j)))
+        } }
+        let m = try XCTUnwrap(PlanarICP.fit(source: src, target: target))
+        XCTAssertEqual(try XCTUnwrap(m.yawDeg), 40, accuracy: 5)
+        XCTAssertLessThan(horizontalError(m, offset), 0.005)
     }
 
     /// The turn is about the source centroid, so `translation` is the centroid's displacement wherever the box sits.

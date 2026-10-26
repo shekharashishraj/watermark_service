@@ -11,7 +11,7 @@ public enum PlanarICP {
         public var minPoints = 10
         /// A candidate counts as equally good when its RMS is within this share of the best RMS (10 %) ...
         public var symmetricRatio: Float = 0.1
-        /// ... plus `rmsFloor` metres, so an exact copy (best RMS near zero) is not out-voted by sampling error alone.
+        /// ... but never tighter than `rmsFloor` metres, so an exact copy (best RMS near zero) is not out-voted by sampling error alone.
         public var rmsFloor: Float = 0.002
         /// Equally good candidates must converge to the best yaw, or the best yaw + 180°, within this many degrees.
         public var symmetryToleranceDeg: Float = 15
@@ -19,7 +19,7 @@ public enum PlanarICP {
         public var inlierDistance: Float = 0.02
         /// Nearest neighbours farther than this are not paired.
         public var maxPairDistance: Float = 0.08
-        /// Target points used while iterating (spread evenly through the array); the source grid and the inlier share use every point.
+        /// Points of each set used while iterating (spread evenly through the array); the grids and the inlier share use every point.
         public var maxIterationPoints = 600
         public init() {}
     }
@@ -33,17 +33,18 @@ public enum PlanarICP {
               src.count >= config.minPoints, tgt.count >= config.minPoints else { return nil }
 
         let cs = centroid(src), ct = centroid(tgt)
+        let iterSrc = iterationSample(src, cap: config.maxIterationPoints)
         let iterTgt = iterationSample(tgt, cap: config.maxIterationPoints)
         let srcGrid = VoxelHash(points: src, cell: config.nnVoxel), grid = VoxelHash(points: tgt, cell: config.nnVoxel)
 
         var candidates: [State] = []
         for k in 0..<config.yawCandidates {
             let start = State(yaw: 360 * Float(k) / Float(config.yawCandidates), translation: ct - cs, rms: .infinity)
-            candidates.append(refine(start, targets: iterTgt, sourceGrid: srcGrid, cs: cs, config: config))
+            candidates.append(refine(start, sources: iterSrc, targets: iterTgt, sourceGrid: srcGrid, targetGrid: grid, cs: cs, config: config))
         }
         guard let best = candidates.min(by: { $0.rms < $1.rms }), best.rms.isFinite else { return nil }
 
-        let limit = best.rms * (1 + config.symmetricRatio) + config.rmsFloor
+        let limit = max(best.rms * (1 + config.symmetricRatio), config.rmsFloor)
         let ambiguous = candidates.contains { c in
             c.rms <= limit && !(angleGap(c.yaw, best.yaw) <= config.symmetryToleranceDeg
                                 || angleGap(c.yaw, best.yaw + 180) <= config.symmetryToleranceDeg)
@@ -101,28 +102,42 @@ public enum PlanarICP {
         return d
     }
 
-    /// Trimmed point-to-point ICP from `start`; the returned RMS is that of the trimmed pairs under the final motion.
-    /// Each target point is pulled back into the source frame and paired with its nearest source point, so a target
-    /// that sees only part of the object (LiDAR from one side) is matched without dragging the unseen source half in.
-    private static func refine(_ start: State, targets: [SIMD3<Float>], sourceGrid: VoxelHash, cs: SIMD3<Float>, config: Config) -> State {
+    /// Trimmed point-to-point ICP from `start`, pairing in both directions: every source point with its nearest target
+    /// point, and every target point (pulled back into the source frame) with its nearest source point. Each set is
+    /// trimmed on its own, so a one-sided source or target loses only its unmatched points, and a stray patch in
+    /// either set cannot pull the fit. The returned RMS is that of both trimmed sets under the final motion.
+    private static func refine(_ start: State, sources: [SIMD3<Float>], targets: [SIMD3<Float>], sourceGrid: VoxelHash,
+                              targetGrid: VoxelHash, cs: SIMD3<Float>, config: Config) -> State {
         var s = start
         let radius = Int((config.maxPairDistance / config.nnVoxel).rounded(.up))
-        var pairs: [(src: SIMD3<Float>, tgt: SIMD3<Float>, d2: Float)] = []
-        pairs.reserveCapacity(targets.count)
+        typealias Pair = (src: SIMD3<Float>, tgt: SIMD3<Float>, d2: Float)
+        var forward: [Pair] = [], backward: [Pair] = []
+        forward.reserveCapacity(sources.count); backward.reserveCapacity(targets.count)
+        var kept: [Pair] = []
+        kept.reserveCapacity(sources.count + targets.count)
         for iteration in 0...config.iterations {
-            let Rinv = rotationY(s.yaw).transpose
-            pairs.removeAll(keepingCapacity: true)
+            let R = rotationY(s.yaw), Rinv = R.transpose
+            forward.removeAll(keepingCapacity: true); backward.removeAll(keepingCapacity: true)
+            for p in sources {
+                let moved = R * (p - cs) + cs + s.translation
+                if let q = targetGrid.nearest(to: moved, maxRing: radius, maxDistance: config.maxPairDistance) {
+                    forward.append((p, q, simd_distance_squared(moved, q)))
+                }
+            }
             for q in targets {
                 let back = Rinv * (q - cs - s.translation) + cs
                 if let p = sourceGrid.nearest(to: back, maxRing: radius, maxDistance: config.maxPairDistance) {
-                    pairs.append((p, q, simd_distance_squared(back, p)))
+                    backward.append((p, q, simd_distance_squared(back, p)))
                 }
             }
-            guard pairs.count >= config.minPoints else { s.rms = .infinity; return s }
+            guard forward.count + backward.count >= config.minPoints else { s.rms = .infinity; return s }
             // Trimming drops the worst pairs, which carry the rotation: the first half of the run keeps them all.
             let share = iteration < config.iterations / 2 ? 1 : config.trim
-            pairs.sort { $0.d2 < $1.d2 }
-            let kept = pairs.prefix(max(config.minPoints, Int((Float(pairs.count) * share).rounded())))
+            kept.removeAll(keepingCapacity: true)
+            for set in [forward, backward] where !set.isEmpty {
+                let sorted = set.sorted { $0.d2 < $1.d2 }
+                kept.append(contentsOf: sorted.prefix(max(1, Int((Float(sorted.count) * share).rounded()))))
+            }
             s.rms = (kept.reduce(0) { $0 + $1.d2 } / Float(kept.count)).squareRoot()
             if iteration == config.iterations { break }
 

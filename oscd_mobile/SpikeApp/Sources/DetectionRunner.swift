@@ -92,13 +92,13 @@ final class DetectionRunner: ObservableObject {
                 let frame = CameraFrame(rgb: rgb, depth: depth, confidence: conf, depthWidth: m.depthWidth,
                                         depthHeight: m.depthHeight, intrinsics: m.intrinsics)
                 let t0 = DispatchTime.now().uptimeNanoseconds
-                let out = try method.process(frame, fused: { [weak self] out, fused in
+                let out = try method.process(frame, fused: { [weak self] out, fused, _ in
                     // Fusion thread: this frame's fusion and mask times, and its mask for the progress view.
                     fusionTimes.add(MethodA.Stage.fusion, fused.fusionMs)
                     fusionTimes.add(MethodA.Stage.mask, fused.maskMs)
                     let image = PreviewController.image(PreviewComposite.overlay(rgb8: rgb, changed: fused.changed, valid: out.valid), W, H)
                     DispatchQueue.main.async { self?.latest = image }
-                }, fusedB: { _, fused in
+                }, fusedB: { _, fused, _ in
                     fusionTimes.add("B: " + MethodA.Stage.fusion, fused.fusionMs)
                     fusionTimes.add("B: " + MethodA.Stage.mask, fused.maskMs)
                 })

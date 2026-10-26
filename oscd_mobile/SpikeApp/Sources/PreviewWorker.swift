@@ -8,11 +8,16 @@ struct PreviewResult {
     let height: Int
     let headline: String             // plain-language status
     let details: String              // per-stage times, for "Show timings"
+    let objects: ObjectReport?       // the object layer's newest report (may lag this frame by a frame or two)
+    let pose: Pose?                  // this frame's camera, nil when it was not placed
+    let intrinsics: Intrinsics       // the camera model `pose` and the masks use
 }
 
 /// Live view: runs Method A on the newest camera frame, on one dedicated thread (splatx sessions are
 /// single-thread). Online fusion only, no refine: refine prunes the change model to a few hundred
-/// Gaussians that smear at viewpoints that were not fused.
+/// Gaussians that smear at viewpoints that were not fused. Each fused frame also goes to a
+/// `SemanticStage` (object events, spec §4.1); its reports ride along on the next delivered result and are
+/// saved to Documents/preview/objects.json.
 final class PreviewWorker {
     var onStatus: ((String) -> Void)?
     var onResult: ((PreviewResult) -> Void)?
@@ -49,12 +54,41 @@ final class PreviewWorker {
     }
 
     /// Documents/preview-log.txt — status messages and one line per frame (NSLog does not reach
-    /// `devicectl --console`; pull this file instead).
+    /// `devicectl --console`; pull this file instead). Written from the preview, fusion and semantic threads.
     private var logHandle: FileHandle?
+    private let logLock = NSLock()
 
     private func log(_ s: String) {
         let line = "\(String(format: "%.3f", Date().timeIntervalSince1970)) \(s)\n"
-        logHandle?.write(Data(line.utf8))
+        logLock.lock(); logHandle?.write(Data(line.utf8)); logLock.unlock()
+    }
+
+    /// The semantic stage's newest report and per-frame ingest times (written on its thread).
+    private var latestObjects: ObjectReport?
+    private var ingestMs: [Double] = []
+
+    private var objects: ObjectReport? { lock.lock(); defer { lock.unlock() }; return latestObjects }
+
+    static var objectsURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("preview").appendingPathComponent(ObjectReport.fileName)
+    }
+
+    /// On the semantic thread: keep the report for the next result, save it, log one `objects:` line.
+    private func received(_ report: ObjectReport) {
+        lock.lock(); latestObjects = report; lock.unlock()
+        let encoder = JSONEncoder()                       // as ObjectReport.save (SessionStore.encoder is internal)
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        do {
+            let url = Self.objectsURL
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try encoder.encode(report).write(to: url, options: .atomic)
+        } catch {
+            log("objects: could not save \(ObjectReport.fileName): \(error.localizedDescription)")
+        }
+        log("objects: \(report.events.count) events" + (report.events.isEmpty ? "" : " · ")
+            + report.events.map { $0.summary() }.joined(separator: " | "))
     }
 
     private func status(_ s: String) {
@@ -69,7 +103,25 @@ final class PreviewWorker {
         logHandle = try? FileHandle(forWritingTo: logURL)
         defer { try? logHandle?.close() }
         do {
-            let method = try MethodA(beforeScan: before.url, beforeLabel: before.label) { status($0) }
+            let method = try MethodA(beforeScan: before.url, beforeLabel: before.label, withDepth: true) { status($0) }
+            var config = TrackerConfig()
+            config.roi = method.roi
+            let stage = SemanticStage(config: config, beforeID: before.id, method: "A")
+            stage.onReport = { [weak self] in self?.received($0) }
+            stage.onIngest = { [weak self] frameID, stats, instances, reportMs in
+                guard let self else { return }
+                self.lock.lock(); self.ingestMs.append(stats.milliseconds); self.lock.unlock()
+                self.log(String(format: "semantic: frame %d · ingest %.1f ms · report %.1f ms · %d components · %d instances",
+                                frameID, stats.milliseconds, reportMs, stats.components, instances))
+            }
+            try? FileManager.default.removeItem(at: Self.objectsURL)
+            defer {
+                stage.close()
+                let (ingested, dropped) = stage.counts
+                lock.lock(); let ms = ingestMs.sorted(); lock.unlock()
+                let median = ms.isEmpty ? 0 : ms[ms.count / 2]
+                log(String(format: "semantic: %d frames ingested, %d dropped · median ingest %.1f ms", ingested, dropped, median))
+            }
             status("Ready. Point the phone at the table, about 30 cm away.")
             lock.lock(); ready = true; lock.unlock()
             while true { autoreleasepool {                                   // see ModelViewer: images per frame
@@ -81,7 +133,7 @@ final class PreviewWorker {
                 lock.unlock()
                 // Returns once the change cue is ready; the frame's fusion and mask arrive later from the
                 // fusion thread, while the next frame is already being processed.
-                process(frame, method: method) { [weak self] result in
+                process(frame, method: method, stage: stage) { [weak self] result in
                     self?.log(result.headline + " | " + result.details)
                     self?.onResult?(result)
                 }
@@ -93,14 +145,16 @@ final class PreviewWorker {
         }
     }
 
-    private func process(_ f: CameraFrame, method: MethodA, deliver: @escaping (PreviewResult) -> Void) {
+    private func process(_ f: CameraFrame, method: MethodA, stage: SemanticStage, deliver: @escaping (PreviewResult) -> Void) {
         let W = f.intrinsics.width, H = f.intrinsics.height, n = W * H
+        let K = method.anchors.intrinsics
         let plain = PreviewComposite.overlay(rgb8: f.rgb, changed: [Bool](repeating: false, count: n),
                                              valid: [Bool](repeating: true, count: n))
         do {
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let out = try method.process(f, fused: { out, fused in
+            let out = try method.process(f, fused: { [weak self] out, fused, context in
                 // On the fusion thread, after this frame has been fused; `out` is this frame's result.
+                stage.submit(context)
                 let judged = out.valid.filter { $0 }.count
                 let flagged = zip(fused.changed, out.valid).filter { $0 && $1 }.count
                 var rgba = [UInt8](repeating: 255, count: n * 4)
@@ -117,16 +171,18 @@ final class PreviewWorker {
                     renderRGBA: rgba, width: W, height: H,
                     headline: String(format: "Camera placed · %.0f%% of the table in view changed · %d views combined",
                                      100 * Double(flagged) / Double(max(judged, 1)), fused.fusedFrames),
-                    details: details))
+                    details: details, objects: self?.objects, pose: out.pose, intrinsics: K))
             })
             if out.pose == nil {
                 deliver(PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
                                       headline: "Can't line this view up with \(method.beforeLabel): \(out.rejection ?? "no match"). Point at the same table from about as far as that scan.",
-                                      details: out.timings.map { String(format: "%@ %.0f", $0.0, $0.1) }.joined(separator: " · ")))
+                                      details: out.timings.map { String(format: "%@ %.0f", $0.0, $0.1) }.joined(separator: " · "),
+                                      objects: objects, pose: nil, intrinsics: K))
             }
         } catch {
             deliver(PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
-                                  headline: "This frame failed: \(error.localizedDescription)", details: ""))
+                                  headline: "This frame failed: \(error.localizedDescription)", details: "",
+                                  objects: objects, pose: nil, intrinsics: K))
         }
     }
 }

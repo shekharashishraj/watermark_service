@@ -43,6 +43,7 @@ final class MethodA {
         static let mask = "Change mask"
         static let fusionWait = "Wait for the previous frame's fusion"
         static let depthRender = "B: render the before model's depth"
+        static let expectedDepth = "Render the before model's depth"
         static let cuesB = "B: depth + colour cues"
         static let perFrame = [xfeat, retrieval, matching, pnp, bundleAdjust, render, judged, sam2, sam2Live, cue, fusionWait, fusion, mask]
 
@@ -83,11 +84,18 @@ final class MethodA {
     private let fusion: FusionStage
     /// Method B (spec §8): same frames and poses as A, cue C_B = clamp(C_A + C_depth + C_color, 0, 2),
     /// fused into its own change model with the same seed. Nil when only A runs.
-    private let referenceDepth: ReferenceDepth?
     private let fusionB: FusionStage?
     var hasB: Bool { fusionB != nil }
+    /// The before model's expected depth (B's depth cue, and D_ren for the object layer). Opened when
+    /// `withB || withDepth`; used on this object's thread only.
+    private let referenceDepth: ReferenceDepth?
+    /// The opened before-scan.
+    let beforeStore: SessionStore
 
-    init(beforeScan: URL, beforeLabel: String, withB: Bool = false, status: (String) -> Void) throws {
+    /// `withDepth` opens the before model's depth renderer without running B, so the fused callbacks'
+    /// `FrameContext` carries D_ren (otherwise D_ren is all NaN and the object layer finds nothing).
+    init(beforeScan: URL, beforeLabel: String, withB: Bool = false, withDepth: Bool = false,
+         status: (String) -> Void) throws {
         self.beforeLabel = beforeLabel
         var clock = DispatchTime.now().uptimeNanoseconds
         var setup = StageTimings()
@@ -112,6 +120,7 @@ final class MethodA {
         lap(Stage.loadModels)
 
         let store = try SessionStore(open: beforeScan)
+        beforeStore = store
         guard let roi = try SceneRegion.region(of: store) else { throw PreviewError.message("\(beforeLabel) has no frames with depth.") }
         self.roi = roi
         var views: [(pose: Pose, keypoints: DescribedKeypoints)] = []
@@ -135,11 +144,10 @@ final class MethodA {
         if withB {
             fusionB = try FusionStage(plyPath: plyURL.path, kernelSourceDir: kernelURL.path,
                                       referenceCentres: views.map { $0.pose.centre })
-            referenceDepth = try ReferenceDepth(plyPath: plyURL.path, kernelSourceDir: kernelURL.path)
         } else {
             fusionB = nil
-            referenceDepth = nil
         }
+        referenceDepth = withB || withDepth ? try ReferenceDepth(plyPath: plyURL.path, kernelSourceDir: kernelURL.path) : nil
         lap(Stage.openFusion)
         setupTimings = setup
     }
@@ -148,8 +156,12 @@ final class MethodA {
     /// thread: 16 SSF steps and the mask (change model rendered at this pose, value > 0.5,
     /// oscd.py:258-263), delivered to `fused` on that thread. Returns once the cue is computed, so the
     /// caller can start the next frame while this one fuses (frames fuse in order; at most one waits).
-    func process(_ f: CameraFrame, fused: @escaping (Output, Fused) -> Void = { _, _ in },
-                 fusedB: @escaping (Output, Fused) -> Void = { _, _ in }) throws -> Output {
+    /// Each callback also gets the frame's `FrameContext` for the object layer, built on the fusion thread:
+    /// `changed` = that method's fused mask ∧ valid, `frameID` = the method's fused-frame count, D_ren all
+    /// NaN when no depth renderer is open.
+    func process(_ f: CameraFrame,
+                 fused: @escaping (Output, Fused, FrameContext) -> Void = { _, _, _ in },
+                 fusedB: @escaping (Output, Fused, FrameContext) -> Void = { _, _, _ in }) throws -> Output {
         var out = Output()
         var clock = DispatchTime.now().uptimeNanoseconds
         func lap(_ stage: String) {
@@ -200,25 +212,35 @@ final class MethodA {
         let cues = CuesA.compute(live: live, render: ren, embRender: embRender, embLive: embLive, valid: out.valid)
         lap(Stage.cue)
         let snapshot = out
-        submit(to: fusion, pose: pose, cue: cues.combined, valid: out.valid, snapshot: snapshot, counter: \.fusedFrames, deliver: fused)
-        if let fusionB, let referenceDepth {
-            let dRen = try referenceDepth.expectedDepth(pose: pose, intrinsics: anchors.intrinsics)
-            lap(Stage.depthRender)
-            let W = f.intrinsics.width, H = f.intrinsics.height
-            let dLive = CuesB.upsampleDepth(f.depth, confidence: f.confidence, width: f.depthWidth, height: f.depthHeight,
-                                            toWidth: W, toHeight: H)
+        let W = f.intrinsics.width, H = f.intrinsics.height
+        let dLive = CuesB.upsampleDepth(f.depth, confidence: f.confidence, width: f.depthWidth, height: f.depthHeight,
+                                        toWidth: W, toHeight: H)
+        let dRen: [Float]
+        if let referenceDepth {
+            dRen = try referenceDepth.expectedDepth(pose: pose, intrinsics: anchors.intrinsics)
+            lap(hasB ? Stage.depthRender : Stage.expectedDepth)
+        } else {
+            dRen = [Float](repeating: .nan, count: W * H)
+        }
+        // `changed` and `frameID` are filled in on the fusion thread.
+        let context = FrameContext(frameID: 0, pose: pose, intrinsics: anchors.intrinsics, changed: [], valid: out.valid,
+                                   dLive: dLive, dRen: dRen, live: live, render: ren, embLive: embLive, embRender: embRender)
+        submit(to: fusion, pose: pose, cue: cues.combined, valid: out.valid, snapshot: snapshot, context: context,
+               counter: \.fusedFrames, deliver: fused)
+        if let fusionB {
             let depthCue = CuesB.depthCue(live: dLive, rendered: dRen, valid: out.valid).cue
             let colorCue = CuesB.colorCue(live: live, render: ren, liveDepth: dLive, renderDepth: dRen, valid: out.valid)
             let cB = CuesB.combine(cA: cues.combined, depth: depthCue, color: colorCue, valid: out.valid)
             lap(Stage.cuesB)
-            submit(to: fusionB, pose: pose, cue: cB, valid: out.valid, snapshot: snapshot, counter: \.fusedFramesB, deliver: fusedB)
+            submit(to: fusionB, pose: pose, cue: cB, valid: out.valid, snapshot: snapshot, context: context,
+                   counter: \.fusedFramesB, deliver: fusedB)
         }
         lap(Stage.fusionWait)
         return out
     }
 
-    private func submit(to stage: FusionStage, pose: Pose, cue: [Float], valid: [Bool], snapshot: Output,
-                        counter: ReferenceWritableKeyPath<MethodA, Int>, deliver: @escaping (Output, Fused) -> Void) {
+    private func submit(to stage: FusionStage, pose: Pose, cue: [Float], valid: [Bool], snapshot: Output, context: FrameContext,
+                        counter: ReferenceWritableKeyPath<MethodA, Int>, deliver: @escaping (Output, Fused, FrameContext) -> Void) {
         let K = anchors.intrinsics
         stage.submit { [weak self] model in
             do {
@@ -230,8 +252,11 @@ final class MethodA {
                 let t2 = DispatchTime.now().uptimeNanoseconds
                 let n = (self?[keyPath: counter] ?? 0) + 1
                 self?[keyPath: counter] = n
+                var context = context
+                context.frameID = n
+                context.changed = zip(changed, valid).map { $0 && $1 }
                 deliver(snapshot, Fused(changed: changed, fusionMs: Double(t1 - t0) / 1e6, maskMs: Double(t2 - t1) / 1e6,
-                                        fusedFrames: n, gaussians: model.count))
+                                        fusedFrames: n, gaussians: model.count), context)
             } catch {
                 AppLog.write("fusion: \(error.localizedDescription)")
             }
@@ -252,6 +277,12 @@ final class MethodA {
     func refine(method: String = "A") throws { try stage(method)?.sync { try $0.refine() } }
 
     func gaussians(method: String = "A") -> Int { (try? stage(method)?.sync { $0.count }) ?? 0 }
+
+    /// The before model's expected depth at `pose` (metres, NaN where uncovered), at the anchors' intrinsics;
+    /// nil when no depth renderer is open (neither `withB` nor `withDepth`).
+    func expectedDepth(pose: Pose) throws -> [Float]? {
+        try referenceDepth?.expectedDepth(pose: pose, intrinsics: anchors.intrinsics)
+    }
 
     /// Waits until every submitted frame has been fused (A and B).
     func finishFusion() throws {

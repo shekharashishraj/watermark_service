@@ -46,7 +46,7 @@ copy the weights the checkout already has into torch's cache:
   - Method A goes over every after-scan frame; "Also B" adds the LiDAR depth and colour cues over the same frames;
   - Results show the change masks (A | B toggle) and each stage's time;
   - results are saved in `<after-scan>/detections/<before-scan>/` (summary.json + one JPEG per frame), with B under `B/`.
-- **Settings:** Live view (Method A on the camera feed against the chosen before-scan) and the stage benchmark.
+- **Settings:** Live view (Method A on the camera feed against the chosen before-scan) and the stage benchmark. The Live view also feeds each fused frame (A's mask, LiDAR depth and the before model's depth) to an object tracker on its own thread, and rewrites the object events to `Documents/preview/objects.json` (an `ObjectReport`) after every tracker update.
 
 Capture and Live view share one ARView (`SharedARView.swift`). With a second ARView, RealityKit drew the camera feed in only one of them, and Capture went black.
 
@@ -78,7 +78,7 @@ Each keyframe in `session.json` keeps `stats.sharpness`, `stats.firstSharpness` 
 
 **On-phone logs** (pull with `xcrun devicectl device copy from ... --source Documents/<file>`):
 - `Documents/app-log.txt`: camera, screen and build events, including each session's first-frame brightness;
-- `Documents/preview-log.txt`: one line per Live view frame.
+- `Documents/preview-log.txt`: one line per Live view frame; per tracked frame a `semantic:` line (frame, ingest and report time in ms, components, instances) and an `objects:` line (event count and each event's summary); at Stop one `semantic:` line with frames ingested, frames dropped and the median ingest time.
 
 When building the app, check the build log for warnings as well as errors: the Live view bug of 2026-10-19 was flagged only by a warning.
 

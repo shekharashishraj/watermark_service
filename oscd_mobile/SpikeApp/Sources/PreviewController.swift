@@ -13,6 +13,10 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
     @Published var headline = ""
     @Published var details = ""
     @Published var running = false
+    /// The object layer's newest report, and the camera of the newest placed frame (for projecting it).
+    @Published var objects: ObjectReport?
+    @Published var lastPose: Pose?
+    @Published var lastIntrinsics: Intrinsics?
 
     private var worker: PreviewWorker?
 
@@ -47,11 +51,14 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
                 if let reference { self.reference = reference }
                 self.headline = r.headline
                 self.details = r.details
+                if let objects = r.objects { self.objects = objects }
+                if let pose = r.pose { self.lastPose = pose; self.lastIntrinsics = r.intrinsics }
             }
         }
         worker = w
         running = true
         overlay = nil; reference = nil; headline = ""; details = ""
+        objects = nil; lastPose = nil; lastIntrinsics = nil
         w.start(before: before)
     }
 

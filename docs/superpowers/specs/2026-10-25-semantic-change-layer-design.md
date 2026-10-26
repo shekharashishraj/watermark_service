@@ -194,12 +194,17 @@ render features, colour histogram and size only, so its `moved` confidences are 
 
 ### 4.7 Step 5: measuring the move (planar ICP)
 Source: the `left` instance's points (reference surface). Target: the `arrived` instance's points (LiDAR).
-Motion model: translation in xz, free small y translation, rotation **about +y** (yaw).
+Motion model: translation in xz, free small y translation, rotation **about +y** (yaw), taken about the source
+centroid (`p' = R_y(yaw)·(p − c_s) + c_s + translation`, so `translation` is the displacement of the source centroid).
 1. Initialise translation from centroids; try 12 yaw candidates (0°, 30°, …) and keep the lowest RMS.
-2. 20 iterations of point-to-point ICP, nearest neighbours via the voxel grid, trimmed to the best 80 % of pairs.
+2. 20 iterations of point-to-point ICP, nearest neighbours via the voxel grid, trimmed to the best 80 % of pairs
+   (the first 10 iterations keep every pair: trimming at the start traps the fit on flat faces).
 3. Report `translation`, `horizontalDistance`, `yawDeg`, `fitRMS`, `inlierFraction`.
-4. If the best and median yaw candidates' RMS differ by < 10 % (a ball, a cylinder), `yawDeg` is `nil` and the UI
-   says "rotation unknown".
+4. Candidates whose final RMS is within 10 % of the best (plus 2 mm, so an exact copy is not out-voted by sampling
+   error) are "equally good". If every one converged to the best yaw, or to the best yaw + 180°, within 15°,
+   `yawDeg` is the best yaw folded into (−90°, 90°] (a box turned 40° and one turned 220° look alike; the smaller
+   rotation is reported, the translation is unchanged). Otherwise (a ball, a cylinder, a cube) `yawDeg` is `nil`
+   and the UI says "rotation unknown". Any non-finite result makes the whole fit `nil`.
 Runs on the background queue when a pair is new or either instance grew by > 20 % since the last fit; a few
 hundred points, ≈ 10 ms.
 

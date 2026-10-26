@@ -202,6 +202,58 @@ final class ObjectTrackerTests: XCTestCase {
         XCTAssertEqual(i.centroid.y, 0.035, accuracy: 0.01)  // 0.5 − (0.45 + 0.015)
     }
 
+    func testBeforeDepthReplacesTheRenderedDepthWhenGiven() throws {
+        // The model's depth sees nothing here; the before-scan's LiDAR says a 5 cm object stood on the block.
+        var ctx = blockFrame(id: 0, live: 0.50, rendered: 0.50)
+        ctx.dBefore = ctx.dRen.enumerated().map { i, _ in self.inBlock(i % 32, i / 32, x0: 13, y0: 9, size: 6) ? 0.45 : 0.50 }
+        let t = ObjectTracker(config: config())
+        t.ingest(ctx)
+        let i = try XCTUnwrap(t.instances.first)
+        XCTAssertEqual(t.instances.count, 1)
+        XCTAssertEqual(i.sign, -1)
+        XCTAssertEqual(i.centroid.z, 0.45, accuracy: 0.01)                 // left points at dBefore
+        ctx.dBefore = nil
+        let plain = ObjectTracker(config: config())
+        plain.ingest(ctx)
+        XCTAssertEqual(plain.instances.filter { $0.sign != 0 }.count, 0)
+    }
+
+    func testFrameGateSkipsFramesWhoseOffsetIsTooLarge() {
+        var c = config()
+        c.maxFrameOffset = 0.03
+        // The whole view is 4 cm farther in LiDAR than in the reference: o = +40 mm.
+        let bad = frame(id: 0, pose: pose(), dLive: { x, y in self.inBlock(x, y, x0: 13, y0: 9, size: 6) ? 0.49 : 0.54 },
+                        dRen: { _, _ in 0.50 }, changed: { x, y in self.inBlock(x, y, x0: 13, y0: 9, size: 6) })
+        let t = ObjectTracker(config: c)
+        let s = t.ingest(bad)
+        XCTAssertTrue(s.skipped)
+        XCTAssertEqual(s.offset, 0.04, accuracy: 1e-4)
+        XCTAssertEqual(t.instances.count, 0)
+        let ok = t.ingest(blockFrame(id: 1))
+        XCTAssertFalse(ok.skipped)
+        XCTAssertEqual(t.instances.count, 1)
+        // Off by default.
+        XCTAssertFalse(ObjectTracker(config: config()).ingest(bad).skipped)
+    }
+
+    func testHitRateHoldsBackInstancesSeenUnchangedInMostFrames() {
+        var c = config()
+        c.minHitRate = 0.6
+        c.dropAfterObserved = 100                                          // keep it to look at
+        let t = ObjectTracker(config: c)
+        for id in 0..<3 { t.ingest(blockFrame(id: id)) }
+        XCTAssertTrue(t.instances[0].isConfirmed(c))                        // 3 of 3
+        for id in 3..<6 {
+            t.ingest(frame(id: id, pose: pose(), dLive: { _, _ in 0.50 }, dRen: { _, _ in 0.50 }, changed: { _, _ in false }))
+        }
+        XCTAssertEqual(t.instances[0].observed, 6)
+        XCTAssertEqual(t.instances[0].hitRate, 0.5, accuracy: 1e-6)
+        XCTAssertFalse(t.instances[0].isConfirmed(c))                       // 3 of 6
+        XCTAssertTrue(t.events().isEmpty)
+        c.minHitRate = 0
+        XCTAssertTrue(t.instances[0].isConfirmed(c))
+    }
+
     func testUnconfirmedInstanceIsDroppedAfterMisses() {
         let t = ObjectTracker(config: config())
         t.ingest(blockFrame(id: 0))

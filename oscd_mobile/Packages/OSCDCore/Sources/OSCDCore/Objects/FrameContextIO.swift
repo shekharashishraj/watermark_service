@@ -21,8 +21,8 @@ public enum FrameContextIO {
     public static func folderName(_ frameID: Int) -> String { String(format: "%06d", frameID) }
 
     /// Writes `<dir>/<frameID padded to 6>/` with changed.npy and valid.npy (b1), dLive.npy and dRen.npy (f4, [H,W]),
-    /// live.npy and render.npy (f4, [3,H,W]), embLive.npy and embRender.npy (u2 = `Float16Pack` bits, [256,64,64]) and
-    /// pose.json. `supportHeight` and `roi` are the run's `TrackerConfig` values; `keyframeID` defaults to the frame ID.
+    /// live.npy and render.npy (f4, [3,H,W]), embLive.npy and embRender.npy (u2 = `Float16Pack` bits, [256,64,64]),
+    /// dBefore.npy (f4, [H,W]) when the frame has one, and pose.json. `supportHeight` and `roi` are the run's `TrackerConfig` values; `keyframeID` defaults to the frame ID.
     public static func write(_ f: FrameContext, to dir: URL, supportHeight: Float? = nil, roi: AABB? = nil,
                              keyframeID: Int? = nil) throws {
         let folder = dir.appendingPathComponent(folderName(f.frameID), isDirectory: true)
@@ -37,6 +37,7 @@ public enum FrameContextIO {
         try save(NPYArray(floats: f.render.data, shape: [f.render.channels, f.render.height, f.render.width]), "render")
         try save(NPYArray(uint16: Float16Pack.pack(f.embLive), shape: embShape), "embLive")
         try save(NPYArray(uint16: Float16Pack.pack(f.embRender), shape: embShape), "embRender")
+        if let b = f.dBefore { try save(NPYArray(floats: b, shape: [h, w]), "dBefore") }
         let m = f.pose.matrix
         let viewmat = (0..<4).flatMap { r in (0..<4).map { c in m[c][r] } }
         let meta = FrameDumpMeta(frameID: f.frameID, keyframeID: keyframeID ?? f.frameID, viewmat: viewmat,
@@ -73,7 +74,9 @@ public enum FrameContextIO {
             dLive: try load("dLive", count: n).floats(), dRen: try load("dRen", count: n).floats(),
             live: try image("live"), render: try image("render"),
             embLive: Float16Pack.unpack(try bits(load("embLive", count: embCount))),
-            embRender: Float16Pack.unpack(try bits(load("embRender", count: embCount))))
+            embRender: Float16Pack.unpack(try bits(load("embRender", count: embCount))),
+            dBefore: FileManager.default.fileExists(atPath: frameDir.appendingPathComponent("dBefore.npy").path)
+                ? try load("dBefore", count: n).floats() : nil)
     }
 
     /// Every frame folder under `dir` (those holding a pose.json), sorted by frame ID.

@@ -56,6 +56,16 @@ final class FrameContextIOTests: XCTestCase {
         for (a, b) in zip(f.embRender, g.embRender) { XCTAssertLessThanOrEqual(abs(a - b), 1e-3 * abs(a) + 1e-7) }
     }
 
+    func testBeforeDepthRoundTripsWhenPresentAndReadsNilWhenAbsent() throws {
+        let dir = try tempDir()
+        XCTAssertNil(try FrameContextIO.read(frameDir: { try FrameContextIO.write(sample(id: 1), to: dir); return dir.appendingPathComponent("000001") }()).dBefore)
+        var f = sample(id: 2)
+        f.dBefore = f.dRen.enumerated().map { $0.offset % 4 == 0 ? .nan : $0.element + 0.01 }
+        try FrameContextIO.write(f, to: dir)
+        let g = try FrameContextIO.read(frameDir: dir.appendingPathComponent("000002"))
+        XCTAssertEqual(try XCTUnwrap(g.dBefore).map(\.bitPattern), f.dBefore!.map(\.bitPattern))
+    }
+
     func testPoseJSONHoldsViewmatAndTrackerSettings() throws {
         let dir = try tempDir()
         let f = sample(id: 3)

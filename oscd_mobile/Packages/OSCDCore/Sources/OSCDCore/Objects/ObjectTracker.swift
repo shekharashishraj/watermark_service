@@ -9,6 +9,12 @@ public struct TrackerConfig: Sendable {
     public var roi: AABB?
     /// World y of the table (`SupportPlane`); when set, points less than `minHeightAboveSupport` above it are ignored.
     public var supportHeight: Float? = nil; public var minHeightAboveSupport: Float = 0.01
+    /// Frames whose median depth offset o (live LiDAR − reference, D13) exceeds this in magnitude are skipped whole:
+    /// the pose or the reference is wrong there (spec §4.4). Nil: no frame is skipped.
+    public var maxFrameOffset: Float? = nil
+    /// An instance confirms only when it changed in at least this fraction of the frames that observed it
+    /// (`frames / observed`); real changes persist across views, pose glitches do not (spec §4.4). 0: no requirement.
+    public var minHitRate: Float = 0
     public init() {}
 }
 
@@ -44,7 +50,12 @@ public struct TrackedInstance: Identifiable, Sendable {
     /// Points ever offered to the reservoir.
     var pointsSeen = 0
 
-    public func isConfirmed(_ c: TrackerConfig) -> Bool { frames.count >= c.confirmFrames && voxelCount >= c.confirmVoxels }
+    public func isConfirmed(_ c: TrackerConfig) -> Bool { meetsFloors(c) && hitRate >= c.minHitRate }
+    /// The frame and voxel floors alone (without the hit rate).
+    func meetsFloors(_ c: TrackerConfig) -> Bool { frames.count >= c.confirmFrames && voxelCount >= c.confirmVoxels }
+    /// Frames it changed in per frame that observed it (`observed` counts only frames where its centroid projects onto a
+    /// valid pixel, so this can exceed 1).
+    public var hitRate: Float { Float(frames.count) / Float(max(observed, 1)) }
 
     mutating func refreshGeometry(voxelSize s: Float) {
         guard !voxels.isEmpty else { return }
@@ -63,6 +74,10 @@ public struct TrackedInstance: Identifiable, Sendable {
 public struct IngestStats: Sendable {
     public var components: Int; public var merged: Int; public var created: Int; public var dropped: Int
     public var milliseconds: Double
+    /// The frame failed `maxFrameOffset` and was not ingested.
+    public var skipped = false
+    /// The frame's median depth offset o (NaN when no pixel was judged).
+    public var offset: Float = .nan
 }
 
 /// Incremental association of signed change components into 3D voxel instances (spec §4.4).
@@ -82,7 +97,15 @@ public final class ObjectTracker {
         let start = DispatchTime.now().uptimeNanoseconds
         var stats = IngestStats(components: 0, merged: 0, created: 0, dropped: 0, milliseconds: 0)
         let w = f.intrinsics.width
-        let (sign, d, offset) = ChangeSign.compute(dLive: f.dLive, dRen: f.dRen, valid: f.valid, tolerance: config.signTolerance)
+        // The reference depth: the before-scan's own LiDAR when the frame carries it, else the model's render (spec §4.4).
+        let ref = f.dBefore ?? f.dRen
+        let (sign, d, offset) = ChangeSign.compute(dLive: f.dLive, dRen: ref, valid: f.valid, tolerance: config.signTolerance)
+        stats.offset = offset
+        if let limit = config.maxFrameOffset, offset.isFinite, abs(offset) > limit {
+            stats.skipped = true
+            stats.milliseconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+            return stats
+        }
         let components = ChangeComponents.extract(changed: f.changed, sign: sign, d: d, width: w,
                                                   height: f.intrinsics.height, minPixels: config.minPixels)
         let toWorld = f.pose.inverse
@@ -90,19 +113,19 @@ public final class ObjectTracker {
         var touched = Set<Int>()
         // Points less than `minHeightAboveSupport` above the table are the sheet, not an object (spec §4.4).
         let floorY = config.supportHeight.map { $0 + config.minHeightAboveSupport }
-        // The model's depth aligned to LiDAR with the frame's D13 offset, so left points share LiDAR's table
-        // (spec §4.4); plain dRen when no pixel was judged.
+        // The reference depth aligned to the live LiDAR with the frame's D13 offset, so left points share its table
+        // (spec §4.4); the plain reference when no pixel was judged.
         let o: Float = offset.isFinite ? offset : 0
         for c in components {
             var points: [SIMD3<Float>] = [], cells: [VoxelKey: Int] = [:]
             for i in c.pixels {
-                let z = c.sign >= 0 ? f.dLive[i] : f.dRen[i] + o
+                let z = c.sign >= 0 ? f.dLive[i] : ref[i] + o
                 guard z.isFinite, z > 0 else { continue }
                 let uv = SIMD2(Float(i % w), Float(i / w))
                 let p = toWorld.apply(f.intrinsics.unproject(uv, depth: z))
                 if let floorY, p.y < floorY {
                     // A flat pixel counts when either surface (live or the aligned reference) clears the table.
-                    let zRen = f.dRen[i] + o
+                    let zRen = ref[i] + o
                     guard c.sign == 0, zRen.isFinite, zRen > 0,
                           toWorld.apply(f.intrinsics.unproject(uv, depth: zRen)).y >= floorY else { continue }
                 }
@@ -175,7 +198,7 @@ public final class ObjectTracker {
         }
         let before = instances.count
         instances.removeAll {
-            !$0.isConfirmed(config) && $0.observed >= config.dropAfterObserved && $0.misses >= config.dropMinMisses
+            !$0.meetsFloors(config) && $0.observed >= config.dropAfterObserved && $0.misses >= config.dropMinMisses
         }
         stats.dropped += before - instances.count
 

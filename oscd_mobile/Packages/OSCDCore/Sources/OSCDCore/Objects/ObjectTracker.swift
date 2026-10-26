@@ -70,6 +70,8 @@ public final class ObjectTracker {
     public private(set) var instances: [TrackedInstance] = []     // ascending id
     private var nextID = 0
     private var rng = SeededSampler(seed: 0x5EED)
+    /// Measured moves per matched pair (see `setMotion`).
+    var motionCache: [PairKey: CachedMotion] = [:]
 
     public init(config: TrackerConfig = TrackerConfig()) { self.config = config }
 

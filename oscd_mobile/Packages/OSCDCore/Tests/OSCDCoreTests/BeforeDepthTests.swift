@@ -9,10 +9,15 @@ final class BeforeDepthTests: XCTestCase {
         // Both points project to (20.4, 13.7): the block is x 20–21, y 13–14.
         let near = SIMD3<Float>((20.4 - k.cx) / k.f * 0.4, (13.7 - k.cy) / k.f * 0.4, 0.4)
         let far = near * 1.5
-        let d = BeforeDepth.splat(points: [far, near, SIMD3(0, 0, -1)], pose: .identity, intrinsics: k)
+        let d = BeforeDepth.splat(points: [far, near, SIMD3(0, 0, -1)], pose: .identity, intrinsics: k, splat: 2)
         let covered = d.indices.filter { d[$0].isFinite }
         XCTAssertEqual(covered.map { [$0 % 32, $0 / 32] }, [[20, 13], [21, 13], [20, 14], [21, 14]])
         for i in covered { XCTAssertEqual(d[i], 0.4, accuracy: 1e-6) }
+        // The default 3×3 block is centred on the nearest pixel (20, 14).
+        let d3 = BeforeDepth.splat(points: [far, near], pose: .identity, intrinsics: k)
+        let covered3 = d3.indices.filter { d3[$0].isFinite }
+        XCTAssertEqual(Set(covered3.map { [$0 % 32, $0 / 32] }), Set((13...15).flatMap { y in (19...21).map { [$0, y] } }))
+        for i in covered3 { XCTAssertEqual(d3[i], 0.4, accuracy: 1e-6) }
         // One pixel per point with splat 1; a point outside the view adds nothing.
         let one = BeforeDepth.splat(points: [near, SIMD3(5, 0, 0.4)], pose: .identity, intrinsics: k, splat: 1)
         XCTAssertEqual(one.indices.filter { one[$0].isFinite }, [14 * 32 + 20])

@@ -106,7 +106,8 @@ if let beforeSession {
     var splatMs: [Double] = [], coverage: [Double] = []
     for k in frames.indices {
         let ts = DispatchTime.now().uptimeNanoseconds
-        let d = BeforeDepth.splat(points: points, pose: frames[k].pose, intrinsics: frames[k].intrinsics, splat: splatSize ?? 2)
+        let d = splatSize.map { BeforeDepth.splat(points: points, pose: frames[k].pose, intrinsics: frames[k].intrinsics, splat: $0) }
+            ?? BeforeDepth.splat(points: points, pose: frames[k].pose, intrinsics: frames[k].intrinsics)
         splatMs.append(Double(DispatchTime.now().uptimeNanoseconds - ts) / 1e6)
         frames[k].dBefore = d
         let valid = frames[k].valid.filter { $0 }.count
@@ -114,7 +115,7 @@ if let beforeSession {
         coverage.append(Double(covered) / Double(max(valid, 1)))
     }
     beforeNote = String(format: "%@ (%d points, %.0f ms; splat %d, %.1f ms per frame, %.0f %% of valid pixels covered)",
-                        store.root.lastPathComponent, points.count, ptsMs, splatSize ?? 2,
+                        store.root.lastPathComponent, points.count, ptsMs, splatSize ?? 3,
                         splatMs.reduce(0, +) / Double(max(splatMs.count, 1)), 100 * coverage.reduce(0, +) / Double(max(coverage.count, 1)))
 } else if noBefore {
     for k in frames.indices { frames[k].dBefore = nil }

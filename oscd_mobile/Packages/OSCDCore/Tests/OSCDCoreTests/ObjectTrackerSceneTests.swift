@@ -145,6 +145,37 @@ final class ObjectTrackerSceneTests: XCTestCase {
         XCTAssertGreaterThan(ungated.events().filter { !$0.hint }.count, 0)
     }
 
+    /// The model's sheet floating 15–35 mm above the true table in patches (Scan 4's splat bias, made worse than the
+    /// frame offset can absorb). With the before-scan's LiDAR as the reference (C1) it no longer creates events, and the
+    /// three real changes are still found; with the model's depth the same patches become false events.
+    func testModelSheetBiasGivesNoEventsWithBeforeLiDAR() {
+        let modelNoise: [Scene.SheetPatch] = [
+            .init(centre: SIMD2(0.05, -0.22), radius: 0.07, offset: -0.035),
+            .init(centre: SIMD2(-0.28, 0.0), radius: 0.06, offset: -0.03),
+            .init(centre: SIMD2(0.05, 0.28), radius: 0.07, offset: -0.025),
+            .init(centre: SIMD2(0.25, -0.2), radius: 0.05, offset: -0.015),
+        ]
+        let objects = [sphereA(at: aBefore), cubeB(yaw: 0), cubeC]
+        var unchanged = Scene(before: objects, after: objects)
+        unchanged.modelNoise = modelNoise
+        unchanged.beforeLiDAR = true
+        let t = tracker(supportHeight: unchanged.tableY)
+        run(unchanged, into: t)
+        XCTAssertEqual(t.events().filter { !$0.hint }.count, 0, t.events().map(Self.describe).joined(separator: "\n"))
+
+        // Not vacuous: compared with the model's depth, the same bias becomes confirmed events.
+        unchanged.beforeLiDAR = false
+        let model = tracker(supportHeight: unchanged.tableY)
+        run(unchanged, into: model)
+        XCTAssertGreaterThan(model.events().filter { !$0.hint }.count, 0)
+
+        var changed = changedScene
+        changed.modelNoise = modelNoise
+        changed.sheetNoise = sheetNoise
+        changed.beforeLiDAR = true
+        assertThreeEvents(changed, tracker(supportHeight: changed.tableY))
+    }
+
     func assertThreeEvents(_ scene: Scene, _ t: ObjectTracker, file: StaticString = #filePath, line: UInt = #line) {
         run(scene, into: t)
         let events = t.events().filter { !$0.hint }

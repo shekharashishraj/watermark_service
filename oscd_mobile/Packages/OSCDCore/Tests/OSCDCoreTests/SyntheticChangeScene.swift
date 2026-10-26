@@ -22,6 +22,11 @@ struct SyntheticChangeScene {
     var tableColour = SIMD3<Float>(0.55, 0.45, 0.35)
     /// Sheet-level depth noise added to the after scene's table pixels (none by default).
     var sheetNoise: [SheetPatch] = []
+    /// The splat model's own depth error over the sheet, added to the before scene's table pixels in `dRen` only
+    /// (negative = the model's sheet floats nearer the camera, as on Scan 4). Changed pixels follow the noisy `dRen`.
+    var modelNoise: [SheetPatch] = []
+    /// Also fill `dBefore`: the before scene's true depth (the before-scan's LiDAR, free of `modelNoise`).
+    var beforeLiDAR = false
 
     static let intrinsics = Intrinsics.oscdCentered(f: 140, width: 160, height: 120)
     static let grid = 64, channels = 256
@@ -31,7 +36,12 @@ struct SyntheticChangeScene {
     /// valid = both rays hit inside `roi`, changed = valid ∧ |dLive − dRen| > 0.01.
     func frame(id: Int, pose: Pose, roi: AABB) -> FrameContext {
         let K = Self.intrinsics
-        let ren = cast(before, pose: pose)
+        var ren = cast(before, pose: pose)
+        let trueBefore = ren.depth
+        for i in ren.depth.indices where ren.hit[i] == -1 {
+            let p = SIMD2(ren.points[i].x, ren.points[i].z)
+            if let patch = modelNoise.first(where: { simd_distance(p, $0.centre) < $0.radius }) { ren.depth[i] += patch.offset }
+        }
         var live = cast(after, pose: pose)
         for i in live.depth.indices where live.hit[i] == -1 {
             let p = SIMD2(live.points[i].x, live.points[i].z)
@@ -48,7 +58,8 @@ struct SyntheticChangeScene {
         return FrameContext(frameID: id, pose: pose, intrinsics: K, changed: changed, valid: valid,
                             dLive: live.depth, dRen: ren.depth,
                             live: image(live.hit, after), render: image(ren.hit, before),
-                            embLive: embedding(live.hit, after), embRender: embedding(ren.hit, before))
+                            embLive: embedding(live.hit, after), embRender: embedding(ren.hit, before),
+                            dBefore: beforeLiDAR ? trueBefore : nil)
     }
 
     /// `count` cameras evenly spaced on a circle of `radius` at `height` above the origin, all looking at the origin

@@ -27,8 +27,9 @@ public enum BeforeDepth {
 
     /// Depth (camera z, metres) per pixel of a W×H view: each point in front of the camera covers the `splat`×`splat`
     /// pixels nearest its projection, and every pixel keeps the nearest depth that covers it (a z-buffer). NaN where no
-    /// point lands.
-    public static func splat(points: [SIMD3<Float>], pose: Pose, intrinsics k: Intrinsics, splat: Int = 2) -> [Float] {
+    /// point lands. 3×3 by default (C1: 84 % of a 480×360 view's valid pixels covered at 5 mm points, against 63 % for
+    /// 2×2, with the unchanged pair still free of events).
+    public static func splat(points: [SIMD3<Float>], pose: Pose, intrinsics k: Intrinsics, splat: Int = 3) -> [Float] {
         let w = k.width, h = k.height
         var z = [Float](repeating: .infinity, count: w * h)
         let s = max(splat, 1), half = Float(s - 1) / 2

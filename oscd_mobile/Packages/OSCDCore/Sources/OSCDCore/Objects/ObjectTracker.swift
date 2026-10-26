@@ -8,7 +8,8 @@ public struct TrackerConfig: Sendable {
     public var reservoir = 2000; public var matchAccept: Float = 0.55; public var matchLow: Float = 0.40
     public var roi: AABB?
     /// World y of the table (`SupportPlane`); when set, points less than `minHeightAboveSupport` above it are ignored.
-    public var supportHeight: Float? = nil; public var minHeightAboveSupport: Float = 0.01
+    /// 2 cm (C1): on Scan 4 → 4 every lower gate left sheet blobs as false events; objects under ≈ 2 cm go unreported.
+    public var supportHeight: Float? = nil; public var minHeightAboveSupport: Float = 0.02
     /// Frames whose median depth offset o (live LiDAR − reference, D13) exceeds this in magnitude are skipped whole:
     /// the pose or the reference is wrong there (spec §4.4). Nil: no frame is skipped.
     public var maxFrameOffset: Float? = nil
@@ -98,6 +99,7 @@ public final class ObjectTracker {
         var stats = IngestStats(components: 0, merged: 0, created: 0, dropped: 0, milliseconds: 0)
         let w = f.intrinsics.width
         // The reference depth: the before-scan's own LiDAR when the frame carries it, else the model's render (spec §4.4).
+        // A NaN in dBefore is no evidence at that pixel (no sign, no left point, no gate pass); dRen is not used there.
         let ref = f.dBefore ?? f.dRen
         let (sign, d, offset) = ChangeSign.compute(dLive: f.dLive, dRen: ref, valid: f.valid, tolerance: config.signTolerance)
         stats.offset = offset

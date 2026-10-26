@@ -55,8 +55,9 @@ and the new spot, the Live view says "Ball: moved 14 cm" with an arrow from wher
 - Speech output. Telling identical objects apart (two identical cups: the nearest pairing wins and is marked low
   confidence).
 - Any change to Methods A or B, to fusion, or to the O-SCD parity tests.
-- Objects under 1 cm tall (a sheet of paper, a flat cable): their points lie within the support gate (§4.4) and are
-  not reported.
+- Objects under about 2 cm tall (flat sunglasses, a phone lying flat, paper, a flat cable) are not reported: their
+  points lie within the support gate (§4.4). On Scan 4 → 5 the LiDAR puts the sunglasses only 0–1 cm above the sheet,
+  the sheet's own height, so no depth rule can tell them apart from it (C1, §8).
 
 ### 2.3 Anti-goals (what would make it a failure even if it "works")
 - A confident wrong story: a false `moved` arrow between two unrelated changes, or a label stated as a fact.
@@ -113,7 +114,8 @@ MethodA.process ──cue──▶ FusionStage (A or B) ──fused mask──�
 Captured in `process` after the cues and carried to the fused callback:
 - `pose`, `intrinsics`, frame id (Detect: keyframe id; Live: a counter);
 - `rgb` (live), `render` (reference RGB), `valid`;
-- `dLive` (upsampled LiDAR, NaN where untrusted), `dRen` (expected reference depth);
+- `dLive` (upsampled LiDAR, NaN where untrusted), `dRen` (expected reference depth, the model's);
+- `dBefore`: the before-scan's own LiDAR splatted into the view (C1, §4.4), the reference the layer compares with;
 - `sign: [Int8]` from `CuesB.depthCue` (+1 arrived, −1 left, 0 no depth evidence);
 - `embLive`, `embRender` (256 × 64 × 64 floats each).
 
@@ -145,14 +147,25 @@ only until the frame's fused callback has run (one frame of back-pressure, as to
    bins; from the live image for `arrived`/`flat`, from the gain-aligned render for `left`, reusing
    `CuesB.colorCue`'s gain step).
 
+**The reference depth is the before-scan's LiDAR (C1).** Wherever this section and §4.4 say dRen for the sign, the
+offset o or the left points, the layer uses `dBefore` when the frame carries it (Detect and Live always fill it): the
+before-scan's high-confidence LiDAR inside the ROI, one point per 5 mm voxel (the mean), built once per run
+(`BeforeDepth.points`, ≈ 58 000 points and ≈ 110 ms on Scan 4), splatted into each frame's view with a z-buffer of
+3 × 3 pixel splats (`BeforeDepth.splat`, ≈ 0.8 ms per frame on the phone; 84 % of a frame's valid pixels covered).
+A pixel where no point lands is no evidence: no sign, no left point, no gate pass; the model's dRen is not used there.
+dRen and the render stay for the SAM2 feature and the colour histogram only (and for Methods A/B). Why: the model's
+depth over the sheet is off by a non-uniform 1–3 cm (per-frame median offset +4 … +162 mm on Scan 4 → 5, against
+−13 … +46 mm, mostly within ±10 mm, for the before-LiDAR), and no single per-frame offset absorbs it; both LiDARs come
+from the same sensor.
+
 ### 4.4 Step 2: back-projection and incremental 3D association
 Each component's pixels become world points:
 - `arrived` / `flat`: `world = pose⁻¹ · K.unproject(uv, dLive)` — the object's surface as LiDAR sees it now;
-- `left`: `world = pose⁻¹ · K.unproject(uv, dRen + o)` — the surface the reference had there, with o the frame's
-  D13 offset (median of dLive − dRen over judged pixels, returned by `ChangeSign.compute`; plain dRen when no pixel is
-  judged).
+- `left`: `world = pose⁻¹ · K.unproject(uv, dBefore + o)` — the surface the before-scan had there, with o the frame's
+  D13 offset (median of dLive − dBefore over judged pixels, returned by `ChangeSign.compute`; plain dBefore when no
+  pixel is judged). (Before C1 this was dRen + o, R28; the same formula applies with dRen when no dBefore is given.)
 
-**Left points use the D13-aligned model depth (R28).** The splat model's depth and LiDAR disagree by a per-frame
+**Left points use the D13-aligned model depth (R28; superseded by the before-LiDAR reference, C1 §4.3, whenever dBefore is given).** The splat model's depth and LiDAR disagree by a per-frame
 offset: on Scan 4 the model's table sits 1–2 cm nearer than LiDAR's (left components' median y −0.434 … −0.411 m
 against LiDAR's table at −0.445 m). Placed with raw dRen, the model's own sheet floated above the support gate and
 became confirmed `removed` blobs (up to 3 145 voxels), while arrived points (dLive) already sat on LiDAR's table.
@@ -161,15 +174,31 @@ aligned model point too. The sign itself already subtracts o, so it is unchanged
 Pixels with no finite depth of the needed kind are skipped. Points are hashed into **1 cm voxels** (`SIMD3<Int32>`
 key); each component yields a voxel set.
 
-**Support gate (R26).** Before voxelising, points less than **1 cm** (`minHeightAboveSupport`) above the table are
-dropped: the `dLive` point for `arrived`/`flat`, the `dRen` point for `left`; a `flat` pixel is kept when either its
-`dLive` or its `dRen` point clears the gate. The table height (`supportHeight`, world y) is the mode of y over the
+**Support gate (R26, height from C1).** Before voxelising, points less than **2 cm** (`minHeightAboveSupport`) above
+the table are dropped: the `dLive` point for `arrived`/`flat`, the aligned reference point (dBefore + o) for `left`; a
+`flat` pixel is kept when either its `dLive` or its reference point clears the gate. The table height (`supportHeight`, world y) is the mode of y over the
 before-scan's high-confidence LiDAR points inside the ROI (`SupportPlane`: 1 cm histogram, refined by the median of
 the winning bin; ≤ 60 keyframes), computed once per run in Detect and in Live. Why: on Scan 4 → 5 and even on the
 unchanged Scan 4 → 4, Method B's final masks flag 17–37 % of the judged area, mostly the floral sheet, where LiDAR
 and the model's depth disagree by 10–50 mm (both signs); those regions became confirmed `removed`/`added` instances
 of up to ~2 000 voxels, which no confirmation floor removes without also removing the objects. A surface lying on
 the table is the sheet, not an object. Without a support height (nil) nothing is gated.
+
+**Calibration on real frames (C1).** Both Detect pairs were dumped (`-dumpFrames YES`) and replayed on the Mac
+(`oscd-objects --sweep`) over four candidate input rules, each alone and combined: a frame gate skipping frames with
+|o| > 15/20/30/50 mm (`maxFrameOffset`), the before-LiDAR reference above (splat 2/3/4), the support-gate height
+1/1.5/2/3 cm, and a hit rate (changed in ≥ 40/60/80 % of the frames that observed the instance, `minHitRate`).
+Acceptance was zero non-hint events on Scan 4 → 4 and exactly the ball's and the sunglasses' moves on 4 → 5.
+- With the model's depth, no setting cleaned 4 → 4 (1–3 false `removed`, 43–1 087 voxels, in every row); the frame
+  gate kept only 9–21 of 28 frames at 15–50 mm, and the hit rate turned false moves into false removals.
+- With the before-LiDAR, a 2 cm or 3 cm gate cleaned 4 → 4 at every splat, frame gate and hit rate up to 60 %, and
+  4 → 5 gave exactly one event: the tennis ball, moved 8–9 cm (scores: splat 2 0.54 "probably moved", splat 3 0.60–0.63,
+  splat 4 0.51–0.54; ICP RMS ≈ 2 mm, 97 % inliers). At 1–1.5 cm the sheet (and a patch at the bed's edge) came back
+  as false events on 4 → 4, and at 1 cm the bed-edge patch was paired with the sunglasses as a false 24 cm move.
+- No setting reported the sunglasses (their LiDAR height is that of the sheet; §2.2, §8).
+Adopted: before-LiDAR reference, 3 × 3 splats, 2 cm gate; frame gate and hit rate kept as options, off (nil / 0).
+Phone result on Detect: 4 → 5 "Object · moved 9 cm" (score 0.62) and nothing else; 4 → 4 no events; the Mac replay of
+the dumps is identical.
 
 Instances are tracked per sign. A new component is merged into an existing instance of the **same sign** when
 `|overlap| / min(|new|, |instance|) ≥ 0.3`; if several qualify, they and the component are merged into one. Otherwise
@@ -387,8 +416,10 @@ Results go into a run report `oscd_mobile/docs/<date>_semantic_layer_runs.md`, a
 | False positives (11–17 % flagged on the unchanged pair) become spurious `added`/`removed` | confirmation floors; the unchanged-pair test must report zero events |
 | Live memory: embeddings per frame | one frame in flight; release after the fused callback |
 | Identical objects | nearest pairing, low confidence shown; stated non-goal |
-| Thin objects (≈ 1 cm) still get no sign at 5 mm tolerance because of LiDAR noise or the median offset | they fall to an `altered` hint, not a wrong event; the ground-truth pair's marker and glasses are the test; if they fail, the fallback is a presence test (live vs render SAM2 feature distance to the surrounding table) in a later version |
+| Thin objects (≈ 1 cm) still get no sign at 5 mm tolerance because of LiDAR noise or the median offset | they fall to an `altered` hint, not a wrong event; the ground-truth pair's marker and glasses are the test; if they fail, the fallback is a presence test (live vs render SAM2 feature distance to the surrounding table) in a later version. C1: the sunglasses failed; see the thin-object row below |
 | Live matching without before-photo features is weaker | expected and shown as lower confidence; Detect gives the strong answer on the same scans |
+| Two objects that exchange places (Scan 4 → 5: ball and sunglasses swapped, ≈ 8 cm each) | their old footprints touch and merge into one `left` instance, so the left side mixes both and matching may prefer the wrong arrived partner; reported confidence stays low. Not solved in this version |
+| Thin objects (sunglasses, a phone lying flat) are invisible to the depth layer: LiDAR puts them 0–1 cm above the sheet, under the 2 cm gate (C1) | stated non-goal (§2.2); follow-up: a depth-free presence cue (live vs render SAM2 feature or colour distance against the surrounding sheet), or a local table height instead of one global support y (the after-frames' table varies by ±1–2 cm in world y) |
 | Detect embedding cache (≈ 190 MB) on a full phone | written to `Caches`, deleted after the run; the run fails cleanly if the write fails |
 
 ## 9. Relation to O-SCD

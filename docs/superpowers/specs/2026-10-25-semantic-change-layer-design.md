@@ -203,11 +203,15 @@ centroid (`p' = R_y(yaw)·(p − c_s) + c_s + translation`, so `translation` is 
    in the target do not pull the fit. The first 10 iterations keep every pair: trimming at the start traps the fit
    on flat faces.
 3. Report `translation`, `horizontalDistance`, `yawDeg`, `fitRMS`, `inlierFraction`.
-4. Candidates whose final RMS is within 10 % of the best (but never less than a 2 mm band, so an exact copy is not
-   out-voted by sampling error) are "equally good". If every one converged to the best yaw, or to the best yaw + 180°, within
-   15°, `yawDeg` is the best yaw folded into (−90°, 90°] (a box turned 40° and one turned 220° look alike; the smaller
-   rotation is reported, the translation is unchanged). Otherwise (a ball, a cylinder, a cube) `yawDeg` is `nil`
-   and the UI says "rotation unknown". Any non-finite result makes the whole fit `nil`.
+4. Group the 12 converged candidates into classes whose yaws agree modulo 180° (within 15°); a class's RMS is its
+   best member's. The best class gives the translation and the yaw. `yawDeg` is reported (folded into (−90°, 90°];
+   a box turned 40° and one turned 220° look alike, the smaller rotation is reported) only when there is no other
+   class or the next-best class's RMS is at least `max(1.6 × best, best + 1 mm)`; otherwise it is `nil` and the UI
+   says "rotation unknown" (a ball, a cylinder, a cube, or a view too thin to tell). Any non-finite result makes the
+   whole fit `nil`. With clutter near the object (e.g. floor bleed) the fit may report "rotation unknown" while the
+   translation stays accurate. The ratio was calibrated on a seeded synthetic matrix (box, cube, sphere; full, half and
+   both-halves views; 0 and 2 mm noise) whose decision boundary is narrow (ratios ≈ 1.57 must stay unknown, ≈ 1.62
+   must report): a known risk to recheck on real LiDAR.
 Runs on the background queue when a pair is new or either instance grew by > 20 % since the last fit; a few
 hundred points, ≈ 10 ms.
 

@@ -129,7 +129,7 @@ final class PlanarICPTests: XCTestCase {
             target.append(SIMD3<Float>(offset.x - 0.05 + 0.005 * Float(i), floorY, offset.z - 0.05 + 0.005 * Float(j)))
         } }
         let m = try XCTUnwrap(PlanarICP.fit(source: src, target: target))
-        XCTAssertEqual(try XCTUnwrap(m.yawDeg), 40, accuracy: 5)
+        assertYawNilOrNear(m, 40, accuracy: 5)
         XCTAssertLessThan(horizontalError(m, offset), 0.005)
     }
 
@@ -177,5 +177,67 @@ final class PlanarICPTests: XCTestCase {
         assertTranslation(m, offset, accuracy: 0.01)
         // Nothing finite left: too few points.
         XCTAssertNil(PlanarICP.fit(source: [SIMD3<Float>](repeating: SIMD3<Float>(.nan, 0, 0), count: 50), target: target))
+    }
+
+    // MARK: - Seeded noise matrix
+
+    /// Smallest difference between two yaws modulo a half turn, in degrees (0...90).
+    func yawGap(_ a: Float, _ b: Float) -> Float {
+        var d = (a - b).truncatingRemainder(dividingBy: 180)
+        if d < 0 { d += 180 }
+        return min(d, 180 - d)
+    }
+
+    func noisy(_ pts: [SIMD3<Float>], sigma: Float, rng: inout SeededSampler) -> [SIMD3<Float>] {
+        guard sigma > 0 else { return pts }
+        func gauss() -> Float {
+            let u1 = max(rng.uniform(), 1e-12), u2 = rng.uniform()
+            return Float((-2 * log(u1)).squareRoot() * cos(2 * Double.pi * u2))
+        }
+        return pts.map { $0 + sigma * SIMD3<Float>(gauss(), gauss(), gauss()) }
+    }
+
+    struct MatrixOutcome { var failures: [String] = []; var wrong = 0; var boxFullCorrect0 = 0; var boxFullCorrectNoisy = 0 }
+
+    /// Shapes x views x yaws x noise levels; a reported yaw must be within 10 deg of the truth modulo 180 (never reported
+    /// for a sphere or a whole cube), box fits must stay within 2 cm and the full-view box must be recognised.
+    func runMatrix(config: PlanarICP.Config) -> MatrixOutcome {
+        let shapes: [(name: String, pts: [SIMD3<Float>])] = [
+            ("box", boxSurface(size: box, step: 0.005)),
+            ("cube", boxSurface(size: SIMD3<Float>(repeating: 0.06), step: 0.005)),
+            ("sphere", sphereSurface(radius: 0.033, n: 800))]
+        var out = MatrixOutcome()
+        var seed: UInt64 = 1
+        for shape in shapes { for view in ["full", "half", "both"] { for yaw: Float in [17, 40, 130] { for sigma: Float in [0, 0.002] {
+            seed += 1
+            var rng = SeededSampler(seed: seed)
+            let srcClean = view == "both" ? shape.pts.filter { $0.z <= 0 } : shape.pts
+            var tgtClean = moved(shape.pts, yawDeg: yaw, by: offset)
+            if view != "full" { tgtClean = tgtClean.filter { $0.z <= offset.z } }
+            let src = noisy(srcClean, sigma: sigma, rng: &rng), tgt = noisy(tgtClean, sigma: sigma, rng: &rng)
+            let name = "\(shape.name)/\(view)/yaw \(Int(yaw))/sigma \(sigma)"
+            guard let m = PlanarICP.fit(source: src, target: tgt, config: config) else {
+                out.failures.append("\(name): fit returned nil"); continue
+            }
+            if shape.name == "box", horizontalError(m, offset) >= 0.02 {
+                out.failures.append("\(name): horizontal error \(horizontalError(m, offset))")
+            }
+            guard let reported = m.yawDeg else { continue }
+            // A sphere never has a yaw, and a cube is 4-fold symmetric when seen whole; a clipped cube may show one.
+            let right = shape.name == "box" || (shape.name == "cube" && view != "full") ? yawGap(reported, yaw) <= 10 : false
+            if !right { out.wrong += 1; out.failures.append("\(name): wrong yaw \(reported) (fitRMS \(m.fitRMS))") }
+            if shape.name == "box", view == "full", right { if sigma == 0 { out.boxFullCorrect0 += 1 } else { out.boxFullCorrectNoisy += 1 } }
+        } } } }
+        if out.boxFullCorrect0 < 3 { out.failures.append("box/full at sigma 0: only \(out.boxFullCorrect0) of 3 yaws found") }
+        if out.boxFullCorrectNoisy < 2 { out.failures.append("box/full at sigma 0.002: only \(out.boxFullCorrectNoisy) of 3 yaws found") }
+        return out
+    }
+
+    func testYawNeverWrongOnNoisyMatrix() throws {
+        #if DEBUG
+        throw XCTSkip("54 fits are too slow in Debug; run with -c release")
+        #endif
+        let out = runMatrix(config: PlanarICP.Config())
+        if !out.failures.isEmpty { XCTFail("\(out.failures.count) problems:\n" + out.failures.joined(separator: "\n")) }
     }
 }

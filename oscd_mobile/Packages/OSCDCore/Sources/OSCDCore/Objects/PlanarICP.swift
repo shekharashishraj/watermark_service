@@ -9,12 +9,12 @@ public enum PlanarICP {
     public struct Config: Sendable {
         public var yawCandidates = 12; public var iterations = 20; public var trim: Float = 0.8
         public var minPoints = 10
-        /// A candidate counts as equally good when its RMS is within this share of the best RMS (10 %) ...
-        public var symmetricRatio: Float = 0.1
-        /// ... but never tighter than `rmsFloor` metres, so an exact copy (best RMS near zero) is not out-voted by sampling error alone.
-        public var rmsFloor: Float = 0.002
-        /// Equally good candidates must converge to the best yaw, or the best yaw + 180°, within this many degrees.
+        /// Candidates whose yaws agree modulo 180° (within `symmetryToleranceDeg`) are one class.
         public var symmetryToleranceDeg: Float = 15
+        /// The yaw is reported only when the next-best class's RMS is at least `distinctRatio` times the best
+        /// class's AND at least `distinctGap` metres above it; otherwise the rotation is unknown.
+        public var distinctRatio: Float = 1.6
+        public var distinctGap: Float = 0.001
         public var nnVoxel: Float = 0.01
         public var inlierDistance: Float = 0.02
         /// Nearest neighbours farther than this are not paired.
@@ -44,11 +44,13 @@ public enum PlanarICP {
         }
         guard let best = candidates.min(by: { $0.rms < $1.rms }), best.rms.isFinite else { return nil }
 
-        let limit = max(best.rms * (1 + config.symmetricRatio), config.rmsFloor)
-        let ambiguous = candidates.contains { c in
-            c.rms <= limit && !(angleGap(c.yaw, best.yaw) <= config.symmetryToleranceDeg
-                                || angleGap(c.yaw, best.yaw + 180) <= config.symmetryToleranceDeg)
-        }
+        // Classes of converged yaws (equal modulo a half turn), each with the RMS of its best member.
+        var classes: [State] = []
+        for c in candidates.filter({ $0.rms.isFinite }).sorted(by: { $0.rms < $1.rms }) where !classes.contains(where: {
+            angleGap($0.yaw, c.yaw) <= config.symmetryToleranceDeg || angleGap($0.yaw, c.yaw + 180) <= config.symmetryToleranceDeg
+        }) { classes.append(c) }
+        let distinct = classes.count < 2
+            || classes[1].rms >= max(config.distinctRatio * best.rms, best.rms + config.distinctGap)
 
         let R = rotationY(best.yaw)
         let radius = Int((config.inlierDistance / config.nnVoxel).rounded(.up))
@@ -58,7 +60,7 @@ public enum PlanarICP {
 
         let motion = Motion(translation: best.translation,
                             horizontalDistance: simd_length(SIMD2<Float>(best.translation.x, best.translation.z)),
-                            yawDeg: ambiguous ? nil : wrapHalfTurn(best.yaw),
+                            yawDeg: distinct ? wrapHalfTurn(best.yaw) : nil,
                             fitRMS: best.rms, inlierFraction: Float(inliers) / Float(src.count))
         let numbers = [motion.translation.x, motion.translation.y, motion.translation.z, motion.horizontalDistance,
                        motion.yawDeg ?? 0, motion.fitRMS, motion.inlierFraction]
@@ -130,13 +132,13 @@ public enum PlanarICP {
                     backward.append((p, q, simd_distance_squared(back, p)))
                 }
             }
-            guard forward.count + backward.count >= config.minPoints else { s.rms = .infinity; return s }
+            guard forward.count >= config.minPoints, backward.count >= config.minPoints else { s.rms = .infinity; return s }
             // Trimming drops the worst pairs, which carry the rotation: the first half of the run keeps them all.
             let share = iteration < config.iterations / 2 ? 1 : config.trim
             kept.removeAll(keepingCapacity: true)
             for set in [forward, backward] where !set.isEmpty {
                 let sorted = set.sorted { $0.d2 < $1.d2 }
-                kept.append(contentsOf: sorted.prefix(max(1, Int((Float(sorted.count) * share).rounded()))))
+                kept.append(contentsOf: sorted.prefix(max(config.minPoints, Int((Float(sorted.count) * share).rounded()))))
             }
             s.rms = (kept.reduce(0) { $0 + $1.d2 } / Float(kept.count)).squareRoot()
             if iteration == config.iterations { break }

@@ -5,14 +5,17 @@ import OSCDCore
 /// fused frames. At most one frame waits; a newer frame replaces it (the older one is dropped), so the
 /// fusion thread never blocks here. After each ingest the matched pairs without a measured move are fitted
 /// with `PlanarICP` on a `.utility` queue; the fit lands back on the tracker thread with `setMotion`, and a
-/// new report follows. Only the tracker thread touches the tracker. Call `close()` when done: the thread
-/// keeps the stage alive until then.
+/// new report follows. Only the tracker thread touches the tracker. Call `close()` when done (after the last fused
+/// frame was submitted): it ingests a frame still waiting, measures the moves still missing and sends a final report.
+/// The thread keeps the stage alive until then.
 final class SemanticStage {
     /// Called on the tracker thread after each ingest and after each measured move lands.
     var onReport: ((ObjectReport) -> Void)?
     /// Called on the tracker thread after each ingest: the frame's id, its stats, the instance count and
     /// how long matching and the report took (ms).
     var onIngest: ((_ frameID: Int, _ stats: IngestStats, _ instances: Int, _ reportMs: Double) -> Void)?
+    /// Called on the tracker thread at `close()`, before the final report: how many moves were measured then.
+    var onFinal: ((_ fits: Int) -> Void)?
 
     private let tracker: ObjectTracker
     private let beforeID: String
@@ -31,6 +34,8 @@ final class SemanticStage {
     private var lastIngestMs = 0.0               // tracker thread only
 
     private struct PairID: Hashable { let left: Int; let arrived: Int }
+    /// The voxel counts of a pair when its fit's points were copied.
+    private struct FitInput { let leftVoxels: Int; let arrivedVoxels: Int }
 
     init(config: TrackerConfig, beforeID: String, method: String) {
         tracker = ObjectTracker(config: config)
@@ -66,8 +71,9 @@ final class SemanticStage {
         return try result.get()
     }
 
-    /// Confirmed instances without a label, oldest first. Live: at most one is named per frame, on the preview thread.
-    /// Runs on the tracker thread through `sync`, so it waits for an ingest in progress.
+    /// Confirmed instances without a label, oldest first. Live: at most one is named per frame, on the preview thread,
+    /// and only when the newest report has an unnamed object (non-hint event without a label). Runs on the tracker
+    /// thread through `sync`, so it waits for an ingest in progress.
     func pendingNaming() -> [TrackedInstance] {
         (try? sync { t in t.instances.filter { $0.label == nil && $0.isConfirmed(t.config) }.sorted { $0.id < $1.id } }) ?? []
     }
@@ -78,13 +84,14 @@ final class SemanticStage {
         return (ingested, dropped)
     }
 
-    /// Drops a waiting frame, runs the jobs already queued, and stops the thread. Moves still being measured
-    /// are discarded when they finish. No callback runs after this returns.
+    /// Stops taking frames and jobs, runs the jobs already queued, ingests a frame still waiting (Stop must not lose
+    /// the last fused frame), then on the tracker thread measures every matched pair still without a move (the same
+    /// fit, synchronously; asynchronous fits still running are discarded when they finish) and sends one final
+    /// report when any frame was ingested. Blocks until then; no callback runs after this returns.
     func close() {
         cond.lock()
         guard !stopping else { cond.unlock(); return }
         stopping = true
-        if pending != nil { pending = nil; dropped += 1 }
         cond.signal()
         cond.unlock()
         finished.wait()
@@ -116,11 +123,13 @@ final class SemanticStage {
                 cond.unlock()
                 autoreleasepool { ingest(frame) }
             } else {                                // stopping, nothing left
+                let any = ingested > 0
                 cond.unlock()
+                if any { autoreleasepool { finalReport() } }
                 break
             }
         }
-        onReport = nil; onIngest = nil
+        onReport = nil; onIngest = nil; onFinal = nil
         finished.signal()
     }
 
@@ -144,18 +153,29 @@ final class SemanticStage {
     private func startFits() {
         for m in tracker.pairsNeedingMotion() {
             let key = PairID(left: m.leftID, arrived: m.arrivedID)
-            guard !fitting.contains(key), let (source, target) = tracker.motionInputs(m) else { continue }
+            guard !fitting.contains(key), let input = tracker.motionInputs(m) else { continue }
             fitting.insert(key)
+            let (source, target) = (input.source, input.target)
+            let counts = FitInput(leftVoxels: input.leftVoxels, arrivedVoxels: input.arrivedVoxels)
             fitQueue.async { [weak self] in
                 let motion = ObjectTracker.measureMotion(source: source, target: target)
-                self?.enqueue { [weak self] in self?.landFit(key, motion) }
+                self?.enqueue { [weak self] in self?.landFit(key, motion, counts) }
             }
         }
     }
 
-    private func landFit(_ key: PairID, _ motion: Motion?) {
+    /// At close: the moves still missing, measured here, then the last report.
+    private func finalReport() {
+        let fits = tracker.fitMotions()
+        fitting.removeAll()
+        onFinal?(fits)
+        onReport?(makeReport())
+    }
+
+    /// The counts are those at copy time, so an instance that grew > 20 % while the fit ran is fitted again.
+    private func landFit(_ key: PairID, _ motion: Motion?, _ counts: FitInput) {
         fitting.remove(key)
-        tracker.setMotion(leftID: key.left, arrivedID: key.arrived, motion)
+        tracker.setMotion(leftID: key.left, arrivedID: key.arrived, motion, leftVoxels: counts.leftVoxels, arrivedVoxels: counts.arrivedVoxels)
         onReport?(makeReport())
     }
 }

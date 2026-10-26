@@ -158,9 +158,17 @@ extension ObjectTracker {
 
     /// Caches the measured move of a pair (nil records a failed measurement so it is not retried). The cache is
     /// dropped once either instance has grown by more than 20 % in voxels.
+    /// The instances' voxel counts are read now: for a fit measured synchronously on `motionInputs`.
     public func setMotion(leftID: Int, arrivedID: Int, _ motion: Motion?) {
         guard let l = instance(leftID), let a = instance(arrivedID) else { return }
-        motionCache[PairKey(leftID: leftID, arrivedID: arrivedID)] = CachedMotion(motion: motion, leftVoxels: l.voxelCount, arrivedVoxels: a.voxelCount)
+        setMotion(leftID: leftID, arrivedID: arrivedID, motion, leftVoxels: l.voxelCount, arrivedVoxels: a.voxelCount)
+    }
+
+    /// As `setMotion(leftID:arrivedID:_:)` with the voxel counts the instances had when the fit's points were copied
+    /// (`motionInputs`), so growth while an asynchronous fit ran still counts towards the 20 % that invalidates it.
+    public func setMotion(leftID: Int, arrivedID: Int, _ motion: Motion?, leftVoxels: Int, arrivedVoxels: Int) {
+        guard instance(leftID) != nil, instance(arrivedID) != nil else { return }
+        motionCache[PairKey(leftID: leftID, arrivedID: arrivedID)] = CachedMotion(motion: motion, leftVoxels: leftVoxels, arrivedVoxels: arrivedVoxels)
     }
 
     /// Matched pairs without a usable cached motion.
@@ -168,11 +176,12 @@ extension ObjectTracker {
         matches().filter { cached($0) == nil }
     }
 
-    /// The ICP inputs of a pair: the left instance's points (source) and the arrived instance's (target); nil when
+    /// The ICP inputs of a pair: the left instance's points (source) and the arrived instance's (target), with both
+    /// instances' voxel counts at the time of the copy (for `setMotion(…, leftVoxels:arrivedVoxels:)`); nil when
     /// either instance is gone.
-    public func motionInputs(_ m: Match) -> (source: [SIMD3<Float>], target: [SIMD3<Float>])? {
+    public func motionInputs(_ m: Match) -> (source: [SIMD3<Float>], target: [SIMD3<Float>], leftVoxels: Int, arrivedVoxels: Int)? {
         guard let l = instance(m.leftID), let a = instance(m.arrivedID) else { return nil }
-        return (l.points, a.points)
+        return (l.points, a.points, l.voxelCount, a.voxelCount)
     }
 
     /// The move from one point set to the other, as every caller of the layer measures it (spec §4.7).
@@ -188,9 +197,10 @@ extension ObjectTracker {
         var fits = 0
         for pair in pairsNeedingMotion() {
             if stop() { break }
-            guard let (source, target) = motionInputs(pair) else { continue }
+            guard let input = motionInputs(pair) else { continue }
             willFit(pair)
-            setMotion(leftID: pair.leftID, arrivedID: pair.arrivedID, Self.measureMotion(source: source, target: target))
+            setMotion(leftID: pair.leftID, arrivedID: pair.arrivedID, Self.measureMotion(source: input.source, target: input.target),
+                      leftVoxels: input.leftVoxels, arrivedVoxels: input.arrivedVoxels)
             fits += 1
         }
         return fits

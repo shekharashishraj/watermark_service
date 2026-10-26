@@ -331,8 +331,31 @@ final class ObjectEventsTests: XCTestCase {
         XCTAssertTrue(t.pairsNeedingMotion().isEmpty)
         XCTAssertEqual(t.fitMotions(), 0)
         // The cached move is exactly what the shared fit gives on the pair's points.
-        let (source, target) = try XCTUnwrap(t.motionInputs(seen[0]))
-        let expected = ObjectTracker.measureMotion(source: source, target: target)
+        let input = try XCTUnwrap(t.motionInputs(seen[0]))
+        let expected = ObjectTracker.measureMotion(source: input.source, target: input.target)
         XCTAssertEqual(t.events()[0].motion?.translation, expected?.translation)
+    }
+
+    /// An asynchronous fit lands after the arrived instance grew by more than 20 %: with the counts captured when its
+    /// points were copied the move is stale at once; read at landing, the growth would be missed.
+    func testCountsCapturedAtCopyTimeDriveInvalidation() throws {
+        let t = pairTracker()
+        t.setFeature(instance: 0, unit(2), source: .render)
+        t.setFeature(instance: 1, unit(2), source: .live)
+        let pair = try XCTUnwrap(t.pairsNeedingMotion().first)
+        let input = try XCTUnwrap(t.motionInputs(pair))
+        XCTAssertEqual(input.leftVoxels, t.instances[0].voxelCount)
+        XCTAssertEqual(input.arrivedVoxels, t.instances[1].voxelCount)
+        // While the fit runs, the arrived block grows.
+        t.ingest(frameWith(id: 3, arrivedX0: 18, arrivedY0: 7, arrivedSize: 10))
+        XCTAssertGreaterThan(Float(t.instances[1].voxelCount), 1.2 * Float(input.arrivedVoxels))
+        let m = Motion(translation: SIMD3(0.1, 0, 0), horizontalDistance: 0.1, yawDeg: nil, fitRMS: 0.001, inlierFraction: 1)
+        t.setMotion(leftID: 0, arrivedID: 1, m, leftVoxels: input.leftVoxels, arrivedVoxels: input.arrivedVoxels)
+        XCTAssertEqual(t.pairsNeedingMotion().count, 1)
+        XCTAssertNil(t.events()[0].motion)
+        // The landing-time counts (the old behaviour) would have kept the stale move.
+        t.setMotion(leftID: 0, arrivedID: 1, m)
+        XCTAssertTrue(t.pairsNeedingMotion().isEmpty)
+        XCTAssertEqual(t.events()[0].motion?.horizontalDistance, 0.1)
     }
 }

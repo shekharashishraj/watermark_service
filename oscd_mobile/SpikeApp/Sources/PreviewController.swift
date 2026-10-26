@@ -42,11 +42,18 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
 
     func start(before: ScanInfo) {
         let w = PreviewWorker()
-        w.onStatus = { s in DispatchQueue.main.async { self.status = s } }
-        w.onResult = { r in
+        // A worker stopped by a quick Stop → Start may still deliver; only the current worker's callbacks land.
+        w.onStatus = { [weak w] s in
+            DispatchQueue.main.async {
+                guard let w, self.worker === w else { return }
+                self.status = s
+            }
+        }
+        w.onResult = { [weak w] r in
             let overlay = Self.image(r.overlayRGBA, r.width, r.height)
             let reference = r.renderRGBA.flatMap { Self.image($0, r.width, r.height) }
             DispatchQueue.main.async {
+                guard let w, self.worker === w else { return }
                 self.overlay = overlay
                 if let reference { self.reference = reference }
                 self.headline = r.headline
@@ -67,6 +74,8 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
 
     func stop() {
         worker?.stop()
+        // The stopped worker's own "Stopped" no longer lands (its callbacks are ignored once it is not current).
+        if worker != nil { status = "Stopped" }
         worker = nil
         running = false
     }

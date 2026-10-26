@@ -126,6 +126,7 @@ final class PreviewWorker {
                                     frameID, splat.map { String(format: "%.1f ms", $0) } ?? "–", stats.milliseconds, reportMs,
                                     stats.components, instances))
                 }
+                s.onFinal = { [weak self] fits in self?.log("semantic: stopping · \(fits) moves measured for the final report") }
                 stage = s
             case .failure(let off):
                 objectsOff = off.reason
@@ -134,6 +135,9 @@ final class PreviewWorker {
             try? FileManager.default.removeItem(at: Self.objectsURL)
             defer {
                 if let stage {
+                    // Stop: every frame already submitted is fused (its fused callback hands it to the stage), then the
+                    // stage ingests the frame still waiting and writes the final report before it closes.
+                    try? method.finishFusion()
                     stage.close()
                     let (ingested, dropped) = stage.counts
                     lock.lock(); let ms = ingestMs.sorted(); lock.unlock()
@@ -174,8 +178,9 @@ final class PreviewWorker {
     /// done, name at most one confirmed instance without a label from the crop the tracker kept (live crop for
     /// sign ≥ 0, render crop for sign < 0). Vision runs on this thread; the label lands on the tracker thread.
     private func nameOnePending(_ stage: SemanticStage?) {
-        guard let stage else { return }
-        guard ObjectNamer.enabled, let i = stage.pendingNaming().first(where: { namingTries[$0.id, default: 0] < Self.maxNamingTries })
+        // Ask the tracker thread (a blocking `sync`) only when the newest report lists an object without a name.
+        guard let stage, ObjectNamer.enabled, objects?.events.contains(where: { !$0.hint && $0.label == nil }) == true,
+              let i = stage.pendingNaming().first(where: { namingTries[$0.id, default: 0] < Self.maxNamingTries })
         else { return }
         namingTries[i.id, default: 0] += 1
         let t = DispatchTime.now().uptimeNanoseconds

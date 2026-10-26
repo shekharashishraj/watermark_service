@@ -103,6 +103,37 @@ public enum InstanceMatcher {
         guard a > 0, b > 0 else { return 0 }
         return min(1, max(0, 1 - abs(log(Float(a) / Float(b))) / log(3)))
     }
+
+    /// Optimal left × arrived pairing where leaving an instance unmatched is always an option (spec §4.6, R36), so the
+    /// assignment never forces a pair to raise its total. The matrix is padded to (rows + cols) square: every left row
+    /// may take a dummy "unmatched" column worth `low`, every arrived column a dummy row worth 0, and dummy × dummy is
+    /// 0, so a real pair (score s) beats leaving both unmatched exactly when s ≥ low. Non-finite scores can never be
+    /// chosen. Returns, per left row, its arrived column, or nil when it stays unmatched; every returned pair has a
+    /// finite score ≥ `low`.
+    public static func assign(score: [[Float]], low: Float) -> [Int?] {
+        let rows = score.count, cols = score.first?.count ?? 0
+        guard rows > 0, cols > 0 else { return [Int?](repeating: nil, count: rows) }
+        let n = rows + cols
+        let never: Float = -1e9
+        // A hair under `low`, so a pair exactly at `low` is preferred to leaving both unmatched (a tie otherwise).
+        let unmatched = low - 1e-6
+        var padded = [[Float]](repeating: [Float](repeating: 0, count: n), count: n)
+        for i in 0..<n {
+            for j in 0..<n {
+                if i < rows && j < cols {
+                    let s = j < score[i].count ? score[i][j] : .nan
+                    padded[i][j] = s.isFinite ? s : never
+                } else if i < rows {
+                    padded[i][j] = unmatched
+                }
+            }
+        }
+        let assigned = Hungarian.assign(score: padded)
+        return (0..<rows).map { i in
+            guard let j = assigned[i], j < cols, j < score[i].count, score[i][j].isFinite, score[i][j] >= low else { return nil }
+            return j
+        }
+    }
 }
 
 struct PairKey: Hashable { var leftID: Int; var arrivedID: Int }
@@ -111,14 +142,15 @@ struct PairKey: Hashable { var leftID: Int; var arrivedID: Int }
 struct CachedMotion { var motion: Motion?; var leftVoxels: Int; var arrivedVoxels: Int }
 
 extension ObjectTracker {
-    /// Confirmed left × arrived instances paired by Hungarian assignment on the full score matrix; pairs under `matchLow` are dropped.
+    /// Confirmed left × arrived instances paired by `InstanceMatcher.assign`: Hungarian assignment with an "unmatched"
+    /// option worth `matchLow` for every instance, so no pair under `matchLow` is made and none is forced (R36).
     public func matches() -> [Match] {
         let lefts = instances.filter { $0.sign < 0 && $0.isConfirmed(config) }
         let arrived = instances.filter { $0.sign > 0 && $0.isConfirmed(config) }
         let score = lefts.map { l in arrived.map { InstanceMatcher.score(l, $0) } }
         var out: [Match] = []
-        for (i, j) in Hungarian.assign(score: score).enumerated() {
-            guard let j, score[i][j] >= config.matchLow else { continue }
+        for (i, j) in InstanceMatcher.assign(score: score, low: config.matchLow).enumerated() {
+            guard let j else { continue }
             out.append(Match(leftID: lefts[i].id, arrivedID: arrived[j].id, score: score[i][j]))
         }
         return out

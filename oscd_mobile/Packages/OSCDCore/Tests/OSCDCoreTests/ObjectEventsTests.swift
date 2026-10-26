@@ -56,6 +56,79 @@ final class ObjectEventsTests: XCTestCase {
         XCTAssertEqual(Hungarian.assign(score: [[0.1, 0.9, 0.3]]), [1])
     }
 
+    // MARK: Matching with an "unmatched" option (R36)
+
+    /// L1→A1 0.72, L1→A2 0.50, L2→A1 0.60, L2→A2 0.30: plain assignment takes the cross pairs (1.10); with the
+    /// opt-out L1→A1 + L2 unmatched (0.72 + 0.40) wins, so L2 is removed and A2 added.
+    func testAssignDoesNotForceAPairToRaiseTheTotal() {
+        let score: [[Float]] = [[0.72, 0.50], [0.60, 0.30]]
+        XCTAssertEqual(Hungarian.assign(score: score), [1, 0])               // the temptation the opt-out removes
+        XCTAssertEqual(InstanceMatcher.assign(score: score, low: 0.40), [0, nil])
+    }
+
+    func testAssignKeepsAPairExactlyAtLowAndDropsOneJustBelow() {
+        XCTAssertEqual(InstanceMatcher.assign(score: [[0.40]], low: 0.40), [0])
+        XCTAssertEqual(InstanceMatcher.assign(score: [[0.3999]], low: 0.40), [nil])
+        XCTAssertEqual(InstanceMatcher.assign(score: [[0.40, 0.10], [0.10, 0.3999]], low: 0.40), [0, nil])
+    }
+
+    /// Three left × three arrived where pairing L1 with its second choice frees A1 for L2: the total rises (1.95 against
+    /// 1.80) but is beaten by leaving L2 unmatched (2.00).
+    func testAssignThreeByThreeResistsAForcedPair() {
+        let score: [[Float]] = [[0.90, 0.45, 0.10], [0.80, 0.20, 0.10], [0.10, 0.10, 0.70]]
+        XCTAssertEqual(Hungarian.assign(score: score), [1, 0, 2])
+        XCTAssertEqual(InstanceMatcher.assign(score: score, low: 0.40), [0, nil, 2])
+    }
+
+    func testAssignRectangularAndNonFinite() {
+        XCTAssertEqual(InstanceMatcher.assign(score: [], low: 0.4), [])
+        XCTAssertEqual(InstanceMatcher.assign(score: [[]], low: 0.4), [nil])
+        XCTAssertEqual(InstanceMatcher.assign(score: [[0.2], [0.9], [0.5]], low: 0.4), [nil, 0, nil])
+        XCTAssertEqual(InstanceMatcher.assign(score: [[0.1, 0.9, 0.3]], low: 0.4), [1])
+        XCTAssertEqual(InstanceMatcher.assign(score: [[.nan, 0.5], [0.9, .infinity]], low: 0.4), [1, 0])
+        XCTAssertEqual(InstanceMatcher.assign(score: [[.nan]], low: 0.4), [nil])
+        XCTAssertEqual(InstanceMatcher.assign(score: [[-.infinity, .nan]], low: -1), [nil])
+    }
+
+    /// The 2 × 2 case end to end: two left and two arrived blocks with features set so the scores tempt a cross
+    /// pairing; the events are one move (L1 → A1), one removal (L2) and one addition (A2).
+    func testTrackerReportsRemovedAndAddedRatherThanAForcedMove() throws {
+        let t = ObjectTracker(config: config())
+        func block(_ x: Int, _ y: Int, _ x0: Int, _ y0: Int) -> Bool { inBlock(x, y, x0: x0, y0: y0, size: 6) }
+        for i in 0..<3 {
+            let l = { (x: Int, y: Int) in block(x, y, 2, 2) || block(x, y, 2, 14) }
+            let a = { (x: Int, y: Int) in block(x, y, 20, 2) || block(x, y, 20, 14) }
+            t.ingest(frame(id: i, pose: pose, dLive: { a($0, $1) ? 0.45 : 0.50 }, dRen: { l($0, $1) ? 0.45 : 0.50 },
+                           changed: { l($0, $1) || a($0, $1) }))
+        }
+        XCTAssertTrue(t.instances.allSatisfy { $0.isConfirmed(t.config) })
+        // Image y grows downwards and the camera looks along +z with +y down, so the top blocks have the smaller world y.
+        let lefts = t.instances.filter { $0.sign < 0 }.sorted { $0.centroid.y < $1.centroid.y }
+        let arrived = t.instances.filter { $0.sign > 0 }.sorted { $0.centroid.y < $1.centroid.y }
+        XCTAssertEqual(lefts.count, 2); XCTAssertEqual(arrived.count, 2)
+        let (l1, l2, a1, a2) = (lefts[0].id, lefts[1].id, arrived[0].id, arrived[1].id)
+        // Unit features: cos(L1, A1) 0.44, cos(L1, A2) 0, cos(L2, A1) 0.2, cos(L2, A2) −0.4. With equal colour and
+        // size the scores are 0.5 + 0.5·cos: 0.72, 0.50, 0.60, 0.30.
+        var fa1 = unit(0).map { $0 * 0.44 }; fa1[1] = 0.2; fa1[2] = (1 - 0.44 * 0.44 - 0.04).squareRoot()
+        var fa2 = unit(1).map { $0 * -0.4 }; fa2[3] = (1 - 0.16).squareRoot()
+        t.setFeature(instance: l1, unit(0), source: .render)
+        t.setFeature(instance: l2, unit(1), source: .render)
+        t.setFeature(instance: a1, fa1, source: .live)
+        t.setFeature(instance: a2, fa2, source: .live)
+        let byID = Dictionary(uniqueKeysWithValues: t.instances.map { ($0.id, $0) })
+        let score = [l1, l2].map { l in [a1, a2].map { InstanceMatcher.score(byID[l]!, byID[$0]!) } }
+        XCTAssertEqual(score[0][0], 0.72, accuracy: 0.02); XCTAssertEqual(score[0][1], 0.50, accuracy: 0.02)
+        XCTAssertEqual(score[1][0], 0.60, accuracy: 0.02); XCTAssertEqual(score[1][1], 0.30, accuracy: 0.02)
+        XCTAssertEqual(Hungarian.assign(score: score), [1, 0])
+
+        XCTAssertEqual(t.matches().map { [$0.leftID, $0.arrivedID] }, [[l1, a1]])
+        let events = t.events()
+        XCTAssertEqual(events.filter { $0.kind == .moved }.map(\.id), [l1])
+        XCTAssertEqual(events.filter { $0.kind == .removed }.map(\.id), [l2])
+        XCTAssertEqual(events.filter { $0.kind == .added }.map(\.id), [a2])
+        XCTAssertEqual(events.count, 3)
+    }
+
     func testScoreFormula() {
         func inst(feature: [Float], bin: Int, voxels: Int) -> TrackedInstance {
             var i = TrackedInstance(id: 0, sign: 1)

@@ -37,6 +37,7 @@ final class ChangeComponentsTests: XCTestCase {
         XCTAssertEqual(r.sign[7], -1)
         for i in [0, 1, 2, 4, 5, 6, 8, 9] { XCTAssertEqual(r.sign[i], 0) }
         XCTAssertEqual(r.d[3], -0.030, accuracy: 1e-5)
+        XCTAssertEqual(r.offset, 0.010, accuracy: 1e-5)
     }
 
     func testSignIsZeroWithoutDepth() {
@@ -44,6 +45,7 @@ final class ChangeComponentsTests: XCTestCase {
                                    valid: [Bool](repeating: true, count: 6))
         XCTAssertEqual(r.sign, [Int8](repeating: 0, count: 6))
         XCTAssertTrue(r.d.allSatisfy { $0.isNaN })
+        XCTAssertTrue(r.offset.isNaN)
     }
 
     func testSeparateBlobsKeepTheirSign() {

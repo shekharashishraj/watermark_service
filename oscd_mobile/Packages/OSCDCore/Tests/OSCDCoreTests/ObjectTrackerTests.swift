@@ -180,6 +180,28 @@ final class ObjectTrackerTests: XCTestCase {
         XCTAssertEqual(low.instances.count, 1)
     }
 
+    /// The model's table sits 1.5 cm nearer than LiDAR's (dRen 0.485 where dLive reads 0.500, camera 0.5 m above the
+    /// table looking straight down). Left points are placed with dRen + the frame's offset, so a removed object (dRen
+    /// 0.45) stays above the LiDAR support while the model's own sheet (left and flat patches) falls on it.
+    func testLeftPointsUseTheFrameOffsetAgainstTheSupport() throws {
+        // World → camera for a camera at (0, 0.5, 0) looking down −y: camera z = −world y, so world y = 0.5 − depth.
+        let down = Pose(R: simd_float3x3(rows: [SIMD3(1, 0, 0), SIMD3(0, 0, 1), SIMD3(0, -1, 0)]), t: SIMD3(0, 0, 0.5))
+        let object = { (x: Int, y: Int) in self.inBlock(x, y, x0: 4, y0: 9, size: 6) }
+        let leftSheet = { (x: Int, y: Int) in self.inBlock(x, y, x0: 14, y0: 9, size: 6) }
+        let flatSheet = { (x: Int, y: Int) in self.inBlock(x, y, x0: 23, y0: 9, size: 6) }
+        let ctx = frame(id: 0, pose: down, dLive: { _, _ in 0.500 },
+                        dRen: { object($0, $1) ? 0.45 : (leftSheet($0, $1) ? 0.478 : 0.485) },
+                        changed: { object($0, $1) || leftSheet($0, $1) || flatSheet($0, $1) })
+        var c = config()
+        c.supportHeight = 0                                  // LiDAR's table
+        let t = ObjectTracker(config: c)
+        t.ingest(ctx)
+        XCTAssertEqual(t.instances.count, 1, "only the removed object: \(t.instances.map { ($0.sign, $0.centroid.y) })")
+        let i = try XCTUnwrap(t.instances.first)
+        XCTAssertEqual(i.sign, -1)
+        XCTAssertEqual(i.centroid.y, 0.035, accuracy: 0.01)  // 0.5 − (0.45 + 0.015)
+    }
+
     func testUnconfirmedInstanceIsDroppedAfterMisses() {
         let t = ObjectTracker(config: config())
         t.ingest(blockFrame(id: 0))

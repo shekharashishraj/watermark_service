@@ -82,7 +82,7 @@ public final class ObjectTracker {
         let start = DispatchTime.now().uptimeNanoseconds
         var stats = IngestStats(components: 0, merged: 0, created: 0, dropped: 0, milliseconds: 0)
         let w = f.intrinsics.width
-        let (sign, d) = ChangeSign.compute(dLive: f.dLive, dRen: f.dRen, valid: f.valid, tolerance: config.signTolerance)
+        let (sign, d, offset) = ChangeSign.compute(dLive: f.dLive, dRen: f.dRen, valid: f.valid, tolerance: config.signTolerance)
         let components = ChangeComponents.extract(changed: f.changed, sign: sign, d: d, width: w,
                                                   height: f.intrinsics.height, minPixels: config.minPixels)
         let toWorld = f.pose.inverse
@@ -90,16 +90,21 @@ public final class ObjectTracker {
         var touched = Set<Int>()
         // Points less than `minHeightAboveSupport` above the table are the sheet, not an object (spec §4.4).
         let floorY = config.supportHeight.map { $0 + config.minHeightAboveSupport }
+        // The model's depth aligned to LiDAR with the frame's D13 offset, so left points share LiDAR's table
+        // (spec §4.4); plain dRen when no pixel was judged.
+        let o: Float = offset.isFinite ? offset : 0
         for c in components {
-            let depth = c.sign >= 0 ? f.dLive : f.dRen
             var points: [SIMD3<Float>] = [], cells: [VoxelKey: Int] = [:]
-            for i in c.pixels where depth[i].isFinite && depth[i] > 0 {
+            for i in c.pixels {
+                let z = c.sign >= 0 ? f.dLive[i] : f.dRen[i] + o
+                guard z.isFinite, z > 0 else { continue }
                 let uv = SIMD2(Float(i % w), Float(i / w))
-                let p = toWorld.apply(f.intrinsics.unproject(uv, depth: depth[i]))
+                let p = toWorld.apply(f.intrinsics.unproject(uv, depth: z))
                 if let floorY, p.y < floorY {
-                    // A flat pixel counts when either surface (live or reference) clears the table.
-                    guard c.sign == 0, f.dRen[i].isFinite, f.dRen[i] > 0,
-                          toWorld.apply(f.intrinsics.unproject(uv, depth: f.dRen[i])).y >= floorY else { continue }
+                    // A flat pixel counts when either surface (live or the aligned reference) clears the table.
+                    let zRen = f.dRen[i] + o
+                    guard c.sign == 0, zRen.isFinite, zRen > 0,
+                          toWorld.apply(f.intrinsics.unproject(uv, depth: zRen)).y >= floorY else { continue }
                 }
                 points.append(p); cells[VoxelKey(p, size: config.voxelSize), default: 0] += 1
             }

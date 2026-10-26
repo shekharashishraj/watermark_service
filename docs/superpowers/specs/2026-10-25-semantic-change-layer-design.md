@@ -148,7 +148,16 @@ only until the frame's fused callback has run (one frame of back-pressure, as to
 ### 4.4 Step 2: back-projection and incremental 3D association
 Each component's pixels become world points:
 - `arrived` / `flat`: `world = pose⁻¹ · K.unproject(uv, dLive)` — the object's surface as LiDAR sees it now;
-- `left`: `world = pose⁻¹ · K.unproject(uv, dRen)` — the surface the reference had there.
+- `left`: `world = pose⁻¹ · K.unproject(uv, dRen + o)` — the surface the reference had there, with o the frame's
+  D13 offset (median of dLive − dRen over judged pixels, returned by `ChangeSign.compute`; plain dRen when no pixel is
+  judged).
+
+**Left points use the D13-aligned model depth (R28).** The splat model's depth and LiDAR disagree by a per-frame
+offset: on Scan 4 the model's table sits 1–2 cm nearer than LiDAR's (left components' median y −0.434 … −0.411 m
+against LiDAR's table at −0.445 m). Placed with raw dRen, the model's own sheet floated above the support gate and
+became confirmed `removed` blobs (up to 3 145 voxels), while arrived points (dLive) already sat on LiDAR's table.
+Adding o puts both point kinds on LiDAR's table, so one support height gates both; the `flat` gate check uses the
+aligned model point too. The sign itself already subtracts o, so it is unchanged.
 Pixels with no finite depth of the needed kind are skipped. Points are hashed into **1 cm voxels** (`SIMD3<Int32>`
 key); each component yields a voxel set.
 

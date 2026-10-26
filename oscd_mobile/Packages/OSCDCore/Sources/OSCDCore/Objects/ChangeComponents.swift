@@ -10,12 +10,13 @@ public struct PixelRect: Equatable, Sendable {
 public enum ChangeSign {
     /// d = dLive − dRen − medianOffset over pixels where both are finite and valid; NaN elsewhere.
     /// sign = +1 if d < −tolerance (arrived), −1 if d > tolerance (left), else 0.
+    /// offset = the frame's median(dLive − dRen) over those pixels (D13); NaN when there are none.
     public static func compute(dLive: [Float], dRen: [Float], valid: [Bool],
-                               tolerance: Float = 0.005) -> (sign: [Int8], d: [Float]) {
+                               tolerance: Float = 0.005) -> (sign: [Int8], d: [Float], offset: Float) {
         let n = dLive.count
         var sign = [Int8](repeating: 0, count: n), d = [Float](repeating: .nan, count: n)
         let judged = (0..<n).filter { valid[$0] && dLive[$0].isFinite && dRen[$0].isFinite }
-        guard !judged.isEmpty else { return (sign, d) }
+        guard !judged.isEmpty else { return (sign, d, .nan) }
         let diffs = judged.map { dLive[$0] - dRen[$0] }.sorted()
         let offset = diffs.count % 2 == 1 ? diffs[diffs.count / 2]
                                           : (diffs[diffs.count / 2 - 1] + diffs[diffs.count / 2]) / 2
@@ -24,7 +25,7 @@ public enum ChangeSign {
             d[i] = v
             if v < -tolerance { sign[i] = 1 } else if v > tolerance { sign[i] = -1 }
         }
-        return (sign, d)
+        return (sign, d, offset)
     }
 }
 

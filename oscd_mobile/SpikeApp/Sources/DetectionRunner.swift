@@ -298,7 +298,7 @@ final class DetectionRunner: ObservableObject {
     private static func logFrame(_ f: FrameContext, _ stats: IngestStats, previous: [TrackedInstance], _ tracker: ObjectTracker) {
         let c = tracker.config
         let W = f.intrinsics.width, H = f.intrinsics.height
-        let (sign, d) = ChangeSign.compute(dLive: f.dLive, dRen: f.dRen, valid: f.valid, tolerance: c.signTolerance)
+        let (sign, d, offset) = ChangeSign.compute(dLive: f.dLive, dRen: f.dRen, valid: f.valid, tolerance: c.signTolerance)
         var bySign = [Int8: Int](), noDepth = 0
         var bands = [Int](repeating: 0, count: 5)          // |d| < 5, 5–10, 10–20, 20–50, ≥ 50 mm
         for i in f.changed.indices where f.changed[i] {
@@ -312,14 +312,15 @@ final class DetectionRunner: ObservableObject {
             let sizes = comps.filter { $0.sign == s }.map(\.pixels.count).sorted(by: >)
             return sizes.isEmpty ? "–" : sizes.prefix(6).map(String.init).joined(separator: ",") + (sizes.count > 6 ? ",…(\(sizes.count))" : "")
         }
-        AppLog.write("objects-frame: \(f.frameID) · changed +\(bySign[1] ?? 0) −\(bySign[-1] ?? 0) 0:\(bySign[0] ?? 0) nodepth \(noDepth) · |d| mm <5 \(bands[0]) 5–10 \(bands[1]) 10–20 \(bands[2]) 20–50 \(bands[3]) ≥50 \(bands[4]) · components + [\(list(1))] − [\(list(-1))] 0 [\(list(0))] · created \(stats.created) merged \(stats.merged) dropped \(stats.dropped) · \(tracker.instances.count) instances")
-        // Each signed component back-projected as the tracker does: how many of its points lie within the margin of
+        AppLog.write("objects-frame: \(f.frameID) · changed +\(bySign[1] ?? 0) −\(bySign[-1] ?? 0) 0:\(bySign[0] ?? 0) nodepth \(noDepth) · offset \(String(format: "%.1f", offset * 1000)) mm · |d| mm <5 \(bands[0]) 5–10 \(bands[1]) 10–20 \(bands[2]) 20–50 \(bands[3]) ≥50 \(bands[4]) · components + [\(list(1))] − [\(list(-1))] 0 [\(list(0))] · created \(stats.created) merged \(stats.merged) dropped \(stats.dropped) · \(tracker.instances.count) instances")
+        // Each signed component back-projected as the tracker does (left points with dRen + the frame's offset): how many of its points lie within the margin of
         // the ROI's vertical faces (what drops a new instance in the frame it is created) and how many lie below
         // the support gate (ignored by the tracker).
         if let roi = c.roi {
             let toWorld = f.pose.inverse
+            let o: Float = offset.isFinite ? offset : 0
             for comp in comps where comp.sign != 0 {
-                let depth = comp.sign > 0 ? f.dLive : f.dRen
+                let depth = comp.sign > 0 ? f.dLive : f.dRen.map { $0 + o }
                 var n = 0, edge = 0, low = 0
                 let floorY = c.supportHeight.map { $0 + c.minHeightAboveSupport }
                 var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)

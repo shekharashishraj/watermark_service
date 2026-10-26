@@ -68,7 +68,7 @@ The script copies the scan off the phone, exports it, trains splatx (8,000 itera
 | `-buildReference <scan>` | Build that scan's model on the phone |
 | `-viewModel <scan>` | Open the 3D viewer; `-viewYawDeg` / `-viewPitchDeg` turn the first view |
 | `-beforeScanID <scan>` | Set the before-scan |
-| `-detectObjects YES` | With `-detectBefore`/`-detectAfter`: also write the object report to `app-log.txt` as one `objects:` JSON line, plus diagnostics: `objects-roi:` (the ROI box), per frame `objects-frame:` (changed pixels by depth sign and \|d\| band, components, created/merged/dropped), `objects-comp:` (each signed component's points, how many lie within the edge margin of the ROI's vertical faces and how many below the support gate) and `objects-gone:` (instances merged or dropped), and at the end one `objects-instance:` line per tracked instance and one `objects-score:` line per left × arrived pair |
+| `-detectObjects YES` | With `-detectBefore`/`-detectAfter`: also write the object report to `app-log.txt` as one `objects:` JSON line, plus diagnostics: `objects-roi:` (the ROI box), per frame `objects-frame:` (changed pixels by depth sign and \|d\| band, the frame's LiDAR − model depth offset, components, created/merged/dropped), `objects-comp:` (each signed component's points, how many lie within the edge margin of the ROI's vertical faces and how many below the support gate) and `objects-gone:` (instances merged or dropped), and at the end one `objects-instance:` line per tracked instance and one `objects-score:` line per left × arrived pair |
 
 **Capture checks:** at Stop, `app-log.txt` gets one `capture stats:` line:
 - frame gap (median, max) and `didUpdate` time (median, p95, max): does keyframe selection slow the camera down?

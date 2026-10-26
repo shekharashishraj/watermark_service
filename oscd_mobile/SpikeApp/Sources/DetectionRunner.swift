@@ -187,8 +187,8 @@ final class DetectionRunner: ObservableObject {
             set(step, .done(String(format: "%d frames · %.1f s", kept.count, seconds(since: t))))
 
             step += 1
-            let objects = try findObjects(method: method, after: store, kept: kept, cache: cache, beforeID: before.id,
-                                          afterID: after.id, step: step)
+            let objects = try findObjects(method: method, after: store, afterURL: after.url, kept: kept, cache: cache,
+                                          beforeID: before.id, afterID: after.id, step: step)
             cache.removeAll()
             timings.add(Self.findObjects, objects.timingsMs[Self.findObjects] ?? 0)
 
@@ -223,7 +223,7 @@ final class DetectionRunner: ObservableObject {
     /// and the reference render are rendered again at the frame's pose, and the SAM2 features come from the cache
     /// the fusion callbacks wrote. Then one PlanarICP fit per matched pair. Runs on the detect thread (it owns
     /// `method`'s renderers).
-    private func findObjects(method: MethodA, after store: SessionStore, kept: [Kept], cache: EmbeddingCache,
+    private func findObjects(method: MethodA, after store: SessionStore, afterURL: URL, kept: [Kept], cache: EmbeddingCache,
                              beforeID: String, afterID: String, step: Int) throws -> ObjectReport {
         let t0 = DispatchTime.now().uptimeNanoseconds
         let m = store.manifest
@@ -241,6 +241,12 @@ final class DetectionRunner: ObservableObject {
         var ingestMs: [Double] = []
         var uncached = 0
         let details = UserDefaults.standard.bool(forKey: "detectObjects")
+        // `-dumpFrames YES`: every frame the tracker ingests, written as FrameContextIO folders for `oscd-objects` on the Mac.
+        // The folder is cleared first so a rerun never mixes frames of two runs.
+        let dumpDir: URL? = UserDefaults.standard.bool(forKey: "dumpFrames")
+            ? DetectionSummary.folder(in: afterURL, beforeID: beforeID).appendingPathComponent("frames", isDirectory: true) : nil
+        if let dumpDir { try? FileManager.default.removeItem(at: dumpDir) }
+        var dumped = 0, dumpMs = 0.0
         if details {
             let r = method.roi
             AppLog.write(String(format: "objects-roi: (%.3f, %.3f, %.3f)–(%.3f, %.3f, %.3f) · %d kept frames",
@@ -264,6 +270,16 @@ final class DetectionRunner: ObservableObject {
                                        changed: zip(mask, f.valid).map { $0 && $1 }, valid: f.valid, dLive: dLive, dRen: dRen,
                                        live: FloatImage(rgb8: f.rgb, width: W, height: H), render: try method.render(pose: f.pose),
                                        embLive: emb.embLive, embRender: emb.embRender)
+            if let dumpDir {
+                let td = DispatchTime.now().uptimeNanoseconds
+                do {
+                    try FrameContextIO.write(context, to: dumpDir, supportHeight: config.supportHeight, roi: config.roi, keyframeID: f.id)
+                    dumped += 1
+                } catch {
+                    AppLog.write("detect: frame \(f.id) was not dumped: \(error.localizedDescription)")
+                }
+                dumpMs += Double(DispatchTime.now().uptimeNanoseconds - td) / 1e6
+            }
             let previous = details ? tracker.instances : []
             let stats = tracker.ingest(context)
             ingestMs.append(stats.milliseconds)
@@ -278,7 +294,11 @@ final class DetectionRunner: ObservableObject {
             tracker.setMotion(leftID: l.id, arrivedID: a.id, PlanarICP.fit(source: l.points, target: a.points))
             fits += 1
         }
-        let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+        let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6 - dumpMs
+        if dumpDir != nil {
+            AppLog.write(String(format: "detect: dumped %d frames to %@/detections/%@/frames · %.0f ms (not counted in find objects)", dumped,
+                                afterID, beforeID, dumpMs))
+        }
         let sorted = ingestMs.sorted()
         let medianMs = sorted.isEmpty ? 0 : (sorted[(sorted.count - 1) / 2] + sorted[sorted.count / 2]) / 2
         let report = tracker.report(beforeID: beforeID, afterID: afterID, method: name,

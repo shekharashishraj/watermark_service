@@ -69,6 +69,16 @@ The script copies the scan off the phone, exports it, trains splatx (8,000 itera
 | `-viewModel <scan>` | Open the 3D viewer; `-viewYawDeg` / `-viewPitchDeg` turn the first view |
 | `-beforeScanID <scan>` | Set the before-scan |
 | `-detectObjects YES` | With `-detectBefore`/`-detectAfter`: also write the object report to `app-log.txt` as one `objects:` JSON line, plus diagnostics: `objects-roi:` (the ROI box), per frame `objects-frame:` (changed pixels by depth sign and \|d\| band, the frame's LiDAR − model depth offset, components, created/merged/dropped), `objects-comp:` (each signed component's points, how many lie within the edge margin of the ROI's vertical faces and how many below the support gate) and `objects-gone:` (instances merged or dropped), and at the end one `objects-instance:` line per tracked instance and one `objects-score:` line per left × arrived pair |
+| `-dumpFrames YES` | With `-detectBefore`/`-detectAfter` (and normally `-detectB YES -detectObjects YES`): write every frame the object tracker ingests to `<after>/detections/<before>/frames/<frameID>/` (`FrameContextIO`: masks, depths, live and render images, fp16 SAM2 embeddings, `pose.json` with the pose, intrinsics, the run's `supportHeight` and `roi`), about 4.5 MB per frame; an earlier dump of the pair is cleared first. Replay it on the Mac with `oscd-objects` |
+
+**Tuning the object layer on the Mac:** the object tracker's inputs come from the phone, so tune its rules on dumps of real runs instead of rebuilding the app each time. Run a pair with `-dumpFrames YES`, pull the frames outside iCloud, and replay them:
+
+    xcrun devicectl device process launch --device <id> --terminate-existing com.veripheye.changes3d -- -detectBefore <before> -detectAfter <after> -detectB YES -detectObjects YES -dumpFrames YES
+    xcrun devicectl device copy from --device <id> --domain-type appDataContainer --domain-identifier com.veripheye.changes3d \
+        --source Documents/sessions/<after>/detections/<before>/frames --destination ~/Library/Caches/oscd-mobile/dumps/<after>_<before>/frames
+    cd Packages/OSCDCore && swift run -c release --scratch-path ~/Library/Caches/oscd-mobile/OSCDCore-build oscd-objects ~/Library/Caches/oscd-mobile/dumps/<after>_<before>/frames --verbose
+
+Keep the dumps in `~/Library/Caches/oscd-mobile/dumps/<after>_<before>/frames/` (outside iCloud; never commit them). `oscd-objects <frames-dir> [--roi minx,miny,minz,maxx,maxy,maxz] [--support <y> | --no-support] [--out <objects.json>] [--min-voxels N] [--accept S] [--low S] [--verbose]` ingests every frame in ID order, fits the motions and prints one line per event (summary, score, voxel counts, centroid height above the support, motion) and the median ingest time. The ROI and the support height default to the dump's own (`pose.json` of the first frame), so a plain replay reproduces the phone's `objects.json`; the flags override them to try other values. `--verbose` also lists every instance (id, sign, voxels, frames, confirmed, centroid, centroid y − support) and every left × arrived match score. `--out` writes an `objects.json` (`beforeID` "mac", method "dump").
 
 **Capture checks:** at Stop, `app-log.txt` gets one `capture stats:` line:
 - frame gap (median, max) and `didUpdate` time (median, p95, max): does keyframe selection slow the camera down?

@@ -9,6 +9,7 @@ let package = Package(
         .target(name: "OSCDCore"),
         .testTarget(name: "OSCDCoreTests", dependencies: ["OSCDCore"]),
         .executableTarget(name: "oscd-harness", dependencies: ["OSCDCore"]),
+        .executableTarget(name: "oscd-objects", dependencies: ["OSCDCore"]),
     ],
     swiftLanguageModes: [.v5]
 )

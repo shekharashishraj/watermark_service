@@ -25,7 +25,7 @@ public enum BeforeDepth {
         }.map { $0.value.sum / $0.value.n }
     }
 
-    /// Depth (camera z, metres) per pixel of a W×H view: each point in front of the camera covers the `splat`×`splat`
+    /// Depth (camera z, metres) per pixel of a W×H view: each point at least 1 mm in front of the camera covers the `splat`×`splat`
     /// pixels nearest its projection, and every pixel keeps the nearest depth that covers it (a z-buffer). NaN where no
     /// point lands. 3×3 by default (C1: 84 % of a 480×360 view's valid pixels covered at 5 mm points, against 63 % for
     /// 2×2, with the unchanged pair still free of events).
@@ -35,9 +35,12 @@ public enum BeforeDepth {
         let s = max(splat, 1), half = Float(s - 1) / 2
         for p in points {
             let c = pose.apply(p)
-            guard c.z > 0 else { continue }
+            // At least 1 mm in front of the camera: nearer, the projection blows up (and Int(…) of a huge uv traps).
+            guard c.z > 1e-3 else { continue }
             let uv = k.project(c)
-            guard uv.x.isFinite, uv.y.isFinite else { continue }
+            // Only projections whose splat can touch the image; this also keeps the Int conversions in range.
+            guard uv.x.isFinite, uv.y.isFinite, uv.x > -Float(s + 1), uv.y > -Float(s + 1),
+                  uv.x < Float(w + s + 1), uv.y < Float(h + s + 1) else { continue }
             let x0 = Int((uv.x - half).rounded(.toNearestOrAwayFromZero)), y0 = Int((uv.y - half).rounded(.toNearestOrAwayFromZero))
             guard x0 + s > 0, y0 + s > 0, x0 < w, y0 < h else { continue }
             for y in max(y0, 0)..<min(y0 + s, h) {

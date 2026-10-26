@@ -287,7 +287,8 @@ final class DetectionRunner: ObservableObject {
             if let dumpDir {
                 let td = DispatchTime.now().uptimeNanoseconds
                 do {
-                    try FrameContextIO.write(context, to: dumpDir, supportHeight: config.supportHeight, roi: config.roi, keyframeID: f.id)
+                    try FrameContextIO.write(context, to: dumpDir, supportHeight: config.supportHeight, roi: config.roi, keyframeID: f.id,
+                                             confirmVoxels: config.confirmVoxels, minHeightAboveSupport: config.minHeightAboveSupport)
                     dumped += 1
                 } catch {
                     AppLog.write("detect: frame \(f.id) was not dumped: \(error.localizedDescription)")

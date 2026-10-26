@@ -13,6 +13,10 @@ public struct FrameDumpMeta: Codable, Equatable, Sendable {
     public var supportHeight: Float?
     /// `TrackerConfig.roi` of the run.
     public var roi: AABB?
+    /// `TrackerConfig.confirmVoxels` of the run (the Smallest object setting; nil in dumps written before it was kept).
+    public var confirmVoxels: Int? = nil
+    /// `TrackerConfig.minHeightAboveSupport` of the run (nil in older dumps).
+    public var minHeightAboveSupport: Float? = nil
 }
 
 /// A `FrameContext` on disk, one folder per frame, so the Mac can replay exactly what the phone's object post-pass ingested
@@ -22,9 +26,10 @@ public enum FrameContextIO {
 
     /// Writes `<dir>/<frameID padded to 6>/` with changed.npy and valid.npy (b1), dLive.npy and dRen.npy (f4, [H,W]),
     /// live.npy and render.npy (f4, [3,H,W]), embLive.npy and embRender.npy (u2 = `Float16Pack` bits, [256,64,64]),
-    /// dBefore.npy (f4, [H,W]) when the frame has one, and pose.json. `supportHeight` and `roi` are the run's `TrackerConfig` values; `keyframeID` defaults to the frame ID.
+    /// dBefore.npy (f4, [H,W]) when the frame has one, and pose.json. `supportHeight`, `roi`, `confirmVoxels` and
+    /// `minHeightAboveSupport` are the run's `TrackerConfig` values; `keyframeID` defaults to the frame ID.
     public static func write(_ f: FrameContext, to dir: URL, supportHeight: Float? = nil, roi: AABB? = nil,
-                             keyframeID: Int? = nil) throws {
+                             keyframeID: Int? = nil, confirmVoxels: Int? = nil, minHeightAboveSupport: Float? = nil) throws {
         let folder = dir.appendingPathComponent(folderName(f.frameID), isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let w = f.intrinsics.width, h = f.intrinsics.height
@@ -41,7 +46,8 @@ public enum FrameContextIO {
         let m = f.pose.matrix
         let viewmat = (0..<4).flatMap { r in (0..<4).map { c in m[c][r] } }
         let meta = FrameDumpMeta(frameID: f.frameID, keyframeID: keyframeID ?? f.frameID, viewmat: viewmat,
-                                 intrinsics: f.intrinsics, supportHeight: supportHeight, roi: roi)
+                                 intrinsics: f.intrinsics, supportHeight: supportHeight, roi: roi,
+                                 confirmVoxels: confirmVoxels, minHeightAboveSupport: minHeightAboveSupport)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(meta).write(to: folder.appendingPathComponent("pose.json"), options: .atomic)

@@ -23,6 +23,18 @@ final class BeforeDepthTests: XCTestCase {
         XCTAssertEqual(one.indices.filter { one[$0].isFinite }, [14 * 32 + 20])
     }
 
+    /// Points at the camera plane: one on the axis would write a depth of ≈ 0 at the image centre, and one off the axis
+    /// projects to a uv so large that converting it to Int traps. Both add nothing; a normal point still splats.
+    func testPointsAtTheCameraPlaneAreSkipped() {
+        let onAxis = SIMD3<Float>(0, 0, 1e-6), offAxis = SIMD3<Float>(0.5, 0, 1e-6), huge = SIMD3<Float>(0.5, 0.5, 1e-30)
+        let d = BeforeDepth.splat(points: [onAxis, offAxis, huge, SIMD3(0.5, 0.5, -1e-30)], pose: .identity, intrinsics: k)
+        XCTAssertTrue(d.allSatisfy { $0.isNaN })
+        let near = SIMD3<Float>((20.4 - k.cx) / k.f * 0.4, (13.7 - k.cy) / k.f * 0.4, 0.4)
+        let mixed = BeforeDepth.splat(points: [huge, onAxis, near], pose: .identity, intrinsics: k)
+        XCTAssertEqual(mixed.filter { $0.isFinite }.count, 9)
+        XCTAssertEqual(mixed.compactMap { $0.isFinite ? $0 : nil }.min() ?? 0, 0.4, accuracy: 1e-6)
+    }
+
     func testSplatUsesThePose() {
         // A camera 0.5 m above the plane y = 0, looking down: camera z = 0.5 − world y.
         let down = Pose(R: simd_float3x3(rows: [SIMD3(1, 0, 0), SIMD3(0, 0, 1), SIMD3(0, -1, 0)]), t: SIMD3(0, 0, 0.5))

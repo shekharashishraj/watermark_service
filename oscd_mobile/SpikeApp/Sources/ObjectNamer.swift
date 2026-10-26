@@ -19,7 +19,8 @@ final class ObjectNamer {
     /// The images are the sensor's landscape frames; the phone is held upright, so they are shown rotated `.right`.
     private static let orientation = CGImagePropertyOrientation.right
 
-    /// Top Vision label at or above `minConfidence`, else nil. Runs synchronously on the calling thread.
+    /// The Vision label `LabelChoice.pick` chooses (R34: a specific label tied with a generic top wins) at or above
+    /// `minConfidence`, else nil. Runs synchronously on the calling thread.
     func name(_ image: CGImage) -> (label: String, confidence: Float)? {
         let request = VNClassifyImageRequest()
         let handler = VNImageRequestHandler(cgImage: image, orientation: Self.orientation, options: [:])
@@ -31,10 +32,10 @@ final class ObjectNamer {
         // Vision lists a label's ancestors with (almost) its confidence ("recreation", "sport", "ball"), so the top few are logged.
         AppLog.write("naming: Vision on \(image.width)×\(image.height) px → "
                      + ranked.prefix(5).map { String(format: "%@ %.3f", $0.identifier, $0.confidence) }.joined(separator: ", "))
-        guard let top = (request.results ?? []).max(by: { $0.confidence < $1.confidence }), top.confidence >= Self.minConfidence else {
+        guard let chosen = LabelChoice.pick(ranked.map { ($0.identifier, $0.confidence) }, minConfidence: Self.minConfidence) else {
             return nil
         }
-        return (Self.display(top.identifier), top.confidence)
+        return (Self.display(chosen.0), chosen.1)
     }
 
     /// Vision's identifiers are lower case with underscores or commas ("tennis_ball", "sunglasses,shades"): the first

@@ -94,6 +94,29 @@ final class FrameContextIOTests: XCTestCase {
         let meta = try FrameContextIO.readMeta(frameDir: dir.appendingPathComponent("000001"))
         XCTAssertNil(meta.supportHeight)
         XCTAssertNil(meta.roi)
+        XCTAssertNil(meta.confirmVoxels)
+        XCTAssertNil(meta.minHeightAboveSupport)
+    }
+
+    /// The run's voxel floor and support-gate height round-trip through pose.json, so `oscd-objects` replays with them.
+    func testConfirmVoxelsAndMinHeightRoundTrip() throws {
+        let dir = try tempDir()
+        try FrameContextIO.write(sample(id: 4), to: dir, supportHeight: -0.445, keyframeID: 9, confirmVoxels: 22, minHeightAboveSupport: 0.03)
+        let folder = dir.appendingPathComponent("000004")
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("pose.json"))) as! [String: Any]
+        XCTAssertEqual(json["confirmVoxels"] as? Int, 22)
+        XCTAssertEqual((json["minHeightAboveSupport"] as? NSNumber)?.floatValue, 0.03)
+        let meta = try FrameContextIO.readMeta(frameDir: folder)
+        XCTAssertEqual(meta.confirmVoxels, 22)
+        XCTAssertEqual(meta.minHeightAboveSupport, 0.03)
+        XCTAssertEqual(meta.keyframeID, 9)
+        XCTAssertEqual(meta, try JSONDecoder().decode(FrameDumpMeta.self, from: JSONEncoder().encode(meta)))
+        // A pose.json written before these fields existed still decodes, with both nil.
+        var old = json
+        old["confirmVoxels"] = nil; old["minHeightAboveSupport"] = nil
+        let legacy = try JSONDecoder().decode(FrameDumpMeta.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertNil(legacy.confirmVoxels); XCTAssertNil(legacy.minHeightAboveSupport)
+        XCTAssertEqual(legacy.supportHeight, -0.445)
     }
 
     func testReadAllSortsByFrameID() throws {

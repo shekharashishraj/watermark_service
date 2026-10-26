@@ -9,8 +9,9 @@ import simd
 //
 // Replays the object layer on the Mac over the frames a Detect run dumped (`-dumpFrames YES`, FrameContextIO):
 // every frame is ingested in ID order, the matched pairs get their ICP motion, and each event is printed with its
-// score, voxel counts and centroid height above the support. The ROI and support height come from the first frame's
-// pose.json (the run's TrackerConfig) unless given; --no-support turns the support gate off. A dump's own dBefore
+// score, voxel counts and centroid height above the support. The ROI, support height, voxel floor and support-gate
+// height come from the first frame's pose.json (the run's TrackerConfig) unless given; --no-support turns the support
+// gate off. A dump's own dBefore
 // (the before-scan's LiDAR in each view) is used unless --no-before; --before-session computes it from a pulled
 // before-scan instead. --sweep replays a grid of the calibration candidates (reference depth × frame gate ×
 // support-gate height × hit rate) and prints one line of non-hint events per setting (no ICP).
@@ -83,6 +84,9 @@ let firstMeta = try FrameContextIO.readMeta(frameDir: first.url)
 var config = TrackerConfig()
 config.roi = roiArg ?? firstMeta.roi
 config.supportHeight = noSupport ? nil : (supportArg ?? firstMeta.supportHeight)
+// The run's Smallest object and support-gate height come from the dump when it kept them; flags override.
+if let v = firstMeta.confirmVoxels { config.confirmVoxels = v }
+if let v = firstMeta.minHeightAboveSupport { config.minHeightAboveSupport = v }
 if let minVoxels { config.confirmVoxels = minVoxels }
 if let accept { config.matchAccept = accept }
 if let low { config.matchLow = low }

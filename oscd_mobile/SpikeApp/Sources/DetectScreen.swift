@@ -221,7 +221,8 @@ struct ResultsView: View {
                 row("Total time", String(format: "%.0f s", s.totalSeconds))
             }
 
-            if let objects = result.objects, !objects.events.isEmpty {
+            // nil when the object layer was off for the run (R35) or the run predates it.
+            if let objects = result.objects {
                 ObjectsSection(report: objects, before: result.before)
             }
 
@@ -270,9 +271,14 @@ struct ObjectsSection: View {
 
     var body: some View {
         Section {
-            ObjectEventList(report: report, compact: false, highlighted: .constant(nil))
-            if let before {
-                NavigationLink("Show in 3D") { ModelViewerScreen(scan: before, report: report) }
+            if report.events.isEmpty {
+                Text("No objects changed").foregroundColor(VeriColor.nickel)
+            } else {
+                ObjectEventList(report: report, compact: false, highlighted: .constant(nil))
+                // The viewer draws over the before-scan's 3D model, so it needs one.
+                if let before, before.hasReference {
+                    NavigationLink("Show in 3D") { ModelViewerScreen(scan: before, report: report) }
+                }
             }
         } header: {
             Text("Objects")

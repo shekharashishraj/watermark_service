@@ -109,35 +109,40 @@ final class PreviewWorker {
             var config = TrackerConfig()
             config.roi = method.roi
             config.confirmVoxels = ObjectSettings.minVoxels
-            // The table's height from the before-scan's LiDAR: changes lying on it are the sheet, not objects.
-            let ts = DispatchTime.now().uptimeNanoseconds
-            config.supportHeight = try SupportPlane.height(of: method.beforeStore, roi: method.roi)
-            log(config.supportHeight.map {
-                String(format: "semantic: support y = %.3f m (%.0f ms)", $0, Double(DispatchTime.now().uptimeNanoseconds - ts) / 1e6)
-            } ?? "semantic: support y = unknown (no LiDAR points in the ROI)")
-            // The before-scan's own LiDAR: each frame's reference depth for the object layer (spec §4.4, C1).
-            let tb = DispatchTime.now().uptimeNanoseconds
-            method.beforeLiDAR = try BeforeDepth.points(of: method.beforeStore, roi: method.roi)
-            log(String(format: "semantic: before-scan LiDAR · %d points in the ROI · %.0f ms", method.beforeLiDAR?.count ?? 0,
-                       Double(DispatchTime.now().uptimeNanoseconds - tb) / 1e6))
-            let stage = SemanticStage(config: config, beforeID: before.id, method: "A")
-            stage.onReport = { [weak self] in self?.received($0) }
-            stage.onIngest = { [weak self] frameID, stats, instances, reportMs in
-                guard let self else { return }
-                self.lock.lock(); self.ingestMs.append(stats.milliseconds); let splat = self.splatMs[frameID]; self.splatMs = self.splatMs.filter { $0.key > frameID }; self.lock.unlock()
-                self.log(String(format: "semantic: frame %d · before-LiDAR splat %@ · ingest %.1f ms · report %.1f ms · %d components · %d instances",
-                                frameID, splat.map { String(format: "%.1f ms", $0) } ?? "–", stats.milliseconds, reportMs,
-                                stats.components, instances))
+            // The table's height and the before-scan's own LiDAR (each frame's reference depth for the object layer,
+            // spec §4.4, C1). Without either the object layer is off for this run (R35); the masks run as usual.
+            var stage: SemanticStage?
+            var objectsOff: String?
+            switch ObjectLayerInputs.prepare(store: method.beforeStore, roi: method.roi, log: { log($0) }) {
+            case .success(let inputs):
+                config.supportHeight = inputs.support.height
+                method.beforeLiDAR = inputs.beforePoints
+                let s = SemanticStage(config: config, beforeID: before.id, method: "A")
+                s.onReport = { [weak self] in self?.received($0) }
+                s.onIngest = { [weak self] frameID, stats, instances, reportMs in
+                    guard let self else { return }
+                    self.lock.lock(); self.ingestMs.append(stats.milliseconds); let splat = self.splatMs[frameID]; self.splatMs = self.splatMs.filter { $0.key > frameID }; self.lock.unlock()
+                    self.log(String(format: "semantic: frame %d · before-LiDAR splat %@ · ingest %.1f ms · report %.1f ms · %d components · %d instances",
+                                    frameID, splat.map { String(format: "%.1f ms", $0) } ?? "–", stats.milliseconds, reportMs,
+                                    stats.components, instances))
+                }
+                stage = s
+            case .failure(let off):
+                objectsOff = off.reason
+                log("semantic: object layer off for this run · \(off.reason)")
             }
             try? FileManager.default.removeItem(at: Self.objectsURL)
             defer {
-                stage.close()
-                let (ingested, dropped) = stage.counts
-                lock.lock(); let ms = ingestMs.sorted(); lock.unlock()
-                let median = ms.isEmpty ? 0 : ms[ms.count / 2]
-                log(String(format: "semantic: %d frames ingested, %d dropped · median ingest %.1f ms", ingested, dropped, median))
+                if let stage {
+                    stage.close()
+                    let (ingested, dropped) = stage.counts
+                    lock.lock(); let ms = ingestMs.sorted(); lock.unlock()
+                    let median = ms.isEmpty ? 0 : ms[ms.count / 2]
+                    log(String(format: "semantic: %d frames ingested, %d dropped · median ingest %.1f ms", ingested, dropped, median))
+                }
             }
-            status("Ready. Point the phone at the table, about 30 cm away.")
+            status("Ready. Point the phone at the table, about 30 cm away."
+                   + (objectsOff.map { " Objects are off: \($0)." } ?? ""))
             lock.lock(); ready = true; lock.unlock()
             while true { autoreleasepool {                                   // see ModelViewer: images per frame
                 wake.wait()
@@ -168,7 +173,8 @@ final class PreviewWorker {
     /// Live naming (Settings → Name objects): after `method.process` returned, so both of the frame's SAM2 encodes are
     /// done, name at most one confirmed instance without a label from the crop the tracker kept (live crop for
     /// sign ≥ 0, render crop for sign < 0). Vision runs on this thread; the label lands on the tracker thread.
-    private func nameOnePending(_ stage: SemanticStage) {
+    private func nameOnePending(_ stage: SemanticStage?) {
+        guard let stage else { return }
         guard ObjectNamer.enabled, let i = stage.pendingNaming().first(where: { namingTries[$0.id, default: 0] < Self.maxNamingTries })
         else { return }
         namingTries[i.id, default: 0] += 1
@@ -183,7 +189,8 @@ final class PreviewWorker {
                    Double(DispatchTime.now().uptimeNanoseconds - t) / 1e6))
     }
 
-    private func process(_ f: CameraFrame, method: MethodA, stage: SemanticStage, deliver: @escaping (PreviewResult) -> Void) {
+    /// `stage` is nil when the object layer is off for the run (R35).
+    private func process(_ f: CameraFrame, method: MethodA, stage: SemanticStage?, deliver: @escaping (PreviewResult) -> Void) {
         let W = f.intrinsics.width, H = f.intrinsics.height, n = W * H
         let K = method.anchors.intrinsics
         let plain = PreviewComposite.overlay(rgb8: f.rgb, changed: [Bool](repeating: false, count: n),
@@ -195,7 +202,7 @@ final class PreviewWorker {
                 if let ms = out.timings.first(where: { $0.0 == MethodA.Stage.beforeDepth })?.1, let self {
                     self.lock.lock(); self.splatMs[context.frameID] = ms; self.lock.unlock()
                 }
-                stage.submit(context)
+                stage?.submit(context)
                 let judged = out.valid.filter { $0 }.count
                 let flagged = zip(fused.changed, out.valid).filter { $0 && $1 }.count
                 var rgba = [UInt8](repeating: 255, count: n * 4)

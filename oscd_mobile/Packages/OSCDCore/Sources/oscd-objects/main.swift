@@ -117,6 +117,13 @@ if let beforeSession {
     beforeNote = String(format: "%@ (%d points, %.0f ms; splat %d, %.1f ms per frame, %.0f %% of valid pixels covered)",
                         store.root.lastPathComponent, points.count, ptsMs, splatSize ?? 3,
                         splatMs.reduce(0, +) / Double(max(splatMs.count, 1)), 100 * coverage.reduce(0, +) / Double(max(coverage.count, 1)))
+    // The table estimate the phone makes from the same scan (R37: off below a 15 % share).
+    if let band = try SupportPlane.densestBand(of: store, roi: config.roi) {
+        print(String(format: "before-scan support band: y = %.3f m · share %.1f %% of %d points · %@", band.height, band.share * 100,
+                     band.points, band.isReliable ? "reliable" : "below the 15 % floor: the object layer would be off"))
+    } else {
+        print("before-scan support band: no LiDAR points in the ROI: the object layer would be off")
+    }
 } else if noBefore {
     for k in frames.indices { frames[k].dBefore = nil }
     beforeNote = "off"

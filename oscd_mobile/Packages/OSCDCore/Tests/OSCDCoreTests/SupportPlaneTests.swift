@@ -34,6 +34,47 @@ final class SupportPlaneTests: XCTestCase {
         XCTAssertNil(SupportPlane.height(points: [SIMD3(0, -1.2, 0)], roi: roi))
     }
 
+    /// Points spread over ten 1 cm bands, except that the band at y = `bandY` holds `share` of them.
+    func bandedPoints(share: Float, bandY: Float = -0.43, count: Int = 4000, _ s: inout SeededSampler) -> [SIMD3<Float>] {
+        let inBand = Int(Float(count) * share)
+        var pts: [SIMD3<Float>] = (0..<inBand).map { _ in
+            SIMD3(Float(s.uniform()) - 0.5, bandY + 0.002 + 0.006 * Float(s.uniform()), Float(s.uniform()) - 0.5)
+        }
+        // The rest evenly over twelve other bands (−0.40 … −0.29), each holding less than the band above.
+        let rest = count - inBand
+        pts += (0..<rest).map { k in
+            let band = Float(k % 12)
+            return SIMD3(Float(s.uniform()) - 0.5, -0.40 + 0.01 * band + 0.002 + 0.006 * Float(s.uniform()), Float(s.uniform()) - 0.5)
+        }
+        return pts
+    }
+
+    /// R37: the densest band must hold at least 15 % of the in-ROI points to be the table.
+    func testDensestBandNeedsAMinimumShare() throws {
+        var s = SeededSampler(seed: 7)
+        let sparse = bandedPoints(share: 0.10, &s)
+        let weak = try XCTUnwrap(SupportPlane.densestBand(points: sparse, roi: roi))
+        XCTAssertEqual(weak.share, 0.10, accuracy: 0.005)
+        XCTAssertEqual(weak.height, -0.425, accuracy: 0.005)
+        XCTAssertEqual(weak.points, 4000)
+        XCTAssertFalse(weak.isReliable)
+        XCTAssertNil(SupportPlane.height(points: sparse, roi: roi))
+
+        let dense = bandedPoints(share: 0.30, &s)
+        let strong = try XCTUnwrap(SupportPlane.densestBand(points: dense, roi: roi))
+        XCTAssertEqual(strong.share, 0.30, accuracy: 0.005)
+        XCTAssertTrue(strong.isReliable)
+        XCTAssertEqual(try XCTUnwrap(SupportPlane.height(points: dense, roi: roi)), -0.425, accuracy: 0.005)
+    }
+
+    func testShareCountsOnlyPointsInsideTheRoi() throws {
+        var s = SeededSampler(seed: 8)
+        let floor: [SIMD3<Float>] = (0..<20000).map { _ in SIMD3(Float(s.uniform()) - 0.5, -1.2, Float(s.uniform()) - 0.5) }
+        let e = try XCTUnwrap(SupportPlane.densestBand(points: bandedPoints(share: 0.30, &s) + floor, roi: roi))
+        XCTAssertEqual(e.share, 0.30, accuracy: 0.005)
+        XCTAssertEqual(e.points, 4000)
+    }
+
     func testHeightFromAScansLiDAR() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("support-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -48,5 +89,6 @@ final class SupportPlaneTests: XCTestCase {
                              confidence: [UInt8](repeating: 2, count: 48))
         }
         XCTAssertEqual(try XCTUnwrap(SupportPlane.height(of: store, roi: nil)), 0, accuracy: 0.005)
+        XCTAssertEqual(try XCTUnwrap(SupportPlane.densestBand(of: store, roi: nil)).share, 1, accuracy: 1e-6)
     }
 }

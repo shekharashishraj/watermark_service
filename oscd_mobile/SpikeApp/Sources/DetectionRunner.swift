@@ -187,10 +187,11 @@ final class DetectionRunner: ObservableObject {
             set(step, .done(String(format: "%d frames · %.1f s", kept.count, seconds(since: t))))
 
             step += 1
+            // nil when the object layer is off for this run (R35): no table height or no before-scan LiDAR.
             let objects = try findObjects(method: method, after: store, afterURL: after.url, kept: kept, cache: cache,
                                           beforeID: before.id, afterID: after.id, step: step)
             cache.removeAll()
-            timings.add(Self.findObjects, objects.timingsMs[Self.findObjects] ?? 0)
+            if let objects { timings.add(Self.findObjects, objects.timingsMs[Self.findObjects] ?? 0) }
 
             step += 1
             func summary(_ name: String) -> DetectionSummary {
@@ -203,7 +204,7 @@ final class DetectionRunner: ObservableObject {
             let b = method.hasB ? summary("B") : nil
             try b?.save(in: after.url)
             try a.save(in: after.url)
-            try objects.save(in: after.url)
+            try objects?.save(in: after.url)
             set(step, .done(String(format: "%.0f s in total", a.totalSeconds)))
             let result = DetectionResult(a: .init(summary: a, frames: runs["A"]!.frames),
                                          b: b.map { .init(summary: $0, frames: runs["B"]!.frames) },
@@ -222,9 +223,10 @@ final class DetectionRunner: ObservableObject {
     /// so the object list agrees with the masks saved beside it. D_live comes from the after-scan's depth, D_ren
     /// and the reference render are rendered again at the frame's pose, and the SAM2 features come from the cache
     /// the fusion callbacks wrote. Then one PlanarICP fit per matched pair. Runs on the detect thread (it owns
-    /// `method`'s renderers).
+    /// `method`'s renderers). Nil, with the step saying why, when the object layer is off for the run (R35): the
+    /// before-scan gives no reliable table height or its LiDAR cannot be read; then no `objects.json` is written.
     private func findObjects(method: MethodA, after store: SessionStore, afterURL: URL, kept: [Kept], cache: EmbeddingCache,
-                             beforeID: String, afterID: String, step: Int) throws -> ObjectReport {
+                             beforeID: String, afterID: String, step: Int) throws -> ObjectReport? {
         let t0 = DispatchTime.now().uptimeNanoseconds
         let m = store.manifest
         let W = m.intrinsics.width, H = m.intrinsics.height
@@ -232,18 +234,19 @@ final class DetectionRunner: ObservableObject {
         var config = TrackerConfig()
         config.roi = method.roi
         config.confirmVoxels = ObjectSettings.minVoxels
-        // The table's height from the before-scan's LiDAR: changes lying on it are the sheet, not objects.
-        let ts = DispatchTime.now().uptimeNanoseconds
-        config.supportHeight = try SupportPlane.height(of: method.beforeStore, roi: method.roi)
-        AppLog.write(config.supportHeight.map {
-            String(format: "semantic: support y = %.3f m (%.0f ms)", $0, Double(DispatchTime.now().uptimeNanoseconds - ts) / 1e6)
-        } ?? "semantic: support y = unknown (no LiDAR points in the ROI)")
-        // The before-scan's own LiDAR, splatted into every frame as the reference depth (spec §4.4, C1).
-        let tb = DispatchTime.now().uptimeNanoseconds
-        let beforePoints = try BeforeDepth.points(of: method.beforeStore, roi: method.roi)
-        AppLog.write(String(format: "semantic: before-scan LiDAR · %d points in the ROI · %.0f ms%@", beforePoints.count,
-                            Double(DispatchTime.now().uptimeNanoseconds - tb) / 1e6,
-                            beforePoints.isEmpty ? " · none: no object will be reported" : ""))
+        // The table's height from the before-scan's LiDAR (changes lying on it are the sheet, not objects) and that
+        // LiDAR itself, splatted into every frame as the reference depth (spec §4.4, C1). Without either: off (R35).
+        let inputs: ObjectLayerInputs.Ready
+        switch ObjectLayerInputs.prepare(store: method.beforeStore, roi: method.roi, log: { AppLog.write($0) }) {
+        case .success(let ready): inputs = ready
+        case .failure(let off):
+            AppLog.write("detect: find objects skipped · \(off.reason)")
+            set(step, .done(off.label))
+            return nil
+        }
+        config.supportHeight = inputs.support.height
+        let beforePoints = inputs.beforePoints
+        if beforePoints.isEmpty { AppLog.write("semantic: no before-scan LiDAR in the ROI: no object will be reported") }
         var splatMs: [Double] = []
         let tracker = ObjectTracker(config: config)
         var ingestMs: [Double] = []

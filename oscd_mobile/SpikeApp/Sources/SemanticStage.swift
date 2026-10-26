@@ -174,6 +174,57 @@ enum ObjectSettings {
     }
 }
 
+/// The object layer's per-run inputs from the before-scan (R35): the table height (`SupportPlane`) and the before-scan's
+/// LiDAR in the ROI (`BeforeDepth`). Without either the layer is off for the run: it never runs without the support
+/// gate, and Methods A/B carry on as usual.
+enum ObjectLayerInputs {
+    struct Ready {
+        let support: SupportPlane.Estimate
+        let beforePoints: [SIMD3<Float>]
+    }
+
+    /// `.success` with both inputs, or `.failure` with the reason the layer is off, for a step label or a status line
+    /// ("no reliable table height in the before-scan …"). `log` gets one line per input.
+    static func prepare(store: SessionStore, roi: AABB, log: (String) -> Void) -> Result<Ready, Off> {
+        let ts = DispatchTime.now().uptimeNanoseconds
+        let band: SupportPlane.Estimate?
+        do {
+            band = try SupportPlane.densestBand(of: store, roi: roi)
+        } catch {
+            log("semantic: support y = unknown (the before-scan's LiDAR could not be read: \(error.localizedDescription)) · object layer off")
+            return .failure(Off(reason: "the before-scan's LiDAR could not be read"))
+        }
+        let supportMs = Double(DispatchTime.now().uptimeNanoseconds - ts) / 1e6
+        guard let band else {
+            log(String(format: "semantic: support y = unknown (no LiDAR points in the ROI, %.0f ms) · object layer off", supportMs))
+            return .failure(Off(reason: "no LiDAR points on the before-scan's table"))
+        }
+        log(String(format: "semantic: support y = %.3f m (share %.1f %% of %d points, %.0f ms)%@", band.height, band.share * 100,
+                   band.points, supportMs, band.isReliable ? "" : String(format: " · under %.0f %%: object layer off", SupportPlane.minShare * 100)))
+        guard band.isReliable else {
+            return .failure(Off(reason: String(format: "no reliable table height in the before-scan (densest 1 cm band: %.0f %% of its points)",
+                                               band.share * 100)))
+        }
+        let tb = DispatchTime.now().uptimeNanoseconds
+        let points: [SIMD3<Float>]
+        do {
+            points = try BeforeDepth.points(of: store, roi: roi)
+        } catch {
+            log("semantic: before-scan LiDAR could not be read: \(error.localizedDescription) · object layer off")
+            return .failure(Off(reason: "the before-scan's LiDAR could not be read"))
+        }
+        log(String(format: "semantic: before-scan LiDAR · %d points in the ROI · %.0f ms", points.count,
+                   Double(DispatchTime.now().uptimeNanoseconds - tb) / 1e6))
+        return .success(Ready(support: band, beforePoints: points))
+    }
+
+    struct Off: Error {
+        let reason: String
+        /// "Off: no reliable table height in the before-scan (…)".
+        var label: String { "Off: " + reason }
+    }
+}
+
 enum SemanticStageError: LocalizedError {
     case closed
     var errorDescription: String? { "The object tracker has stopped." }

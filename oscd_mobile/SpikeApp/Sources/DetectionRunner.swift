@@ -320,6 +320,33 @@ final class DetectionRunner: ObservableObject {
         let photoMs = Double(DispatchTime.now().uptimeNanoseconds - tp) / 1e6
         AppLog.write(String(format: "detect: before-photo features · %d left objects · %d photos encoded · %.0f ms", photoFeatures,
                             photoCache.count, photoMs))
+        // Vision names every confirmed instance (Settings → Name objects). A left object is read from the full-size
+        // before-scan photo chosen above; the others from the best crop the tracker kept.
+        var namingMs = 0.0
+        if ObjectNamer.enabled {
+            let tn = DispatchTime.now().uptimeNanoseconds
+            let namer = ObjectNamer()
+            var named = 0
+            for i in tracker.instances where i.isConfirmed(config) {
+                if isCancelled { throw PreviewError.message("Cancelled") }
+                set(step, .active("Naming object \(i.id)…"))
+                let image: CGImage?
+                if i.sign < 0, let k = i.bestBeforeKeyframe, let rect = i.bestBeforeRect {
+                    image = ObjectNamer.beforeCrop(store: method.beforeStore, keyframeID: k, rect: rect)
+                } else {
+                    image = i.bestCrop.flatMap(ObjectNamer.cgImage)
+                }
+                if let image, let n = namer.name(image) {
+                    tracker.setLabel(instance: i.id, n.label, confidence: n.confidence)
+                    named += 1
+                    AppLog.write(String(format: "naming: object %d (sign %+d) → %@ %.2f", i.id, Int(i.sign), n.label, n.confidence))
+                } else {
+                    AppLog.write("naming: object \(i.id) (sign \(i.sign)) has no label")
+                }
+            }
+            namingMs = Double(DispatchTime.now().uptimeNanoseconds - tn) / 1e6
+            AppLog.write(String(format: "detect: naming · %d named · %.0f ms", named, namingMs))
+        }
         let fits = tracker.fitMotions(willFit: { set(step, .active("Measuring how object \($0.leftID) moved…")) },
                                       stop: { isCancelled })
         if isCancelled { throw PreviewError.message("Cancelled") }
@@ -335,7 +362,8 @@ final class DetectionRunner: ObservableObject {
                             splatSorted.isEmpty ? 0 : splatSorted[splatSorted.count / 2], splatSorted.last ?? 0, splatSorted.count))
         let report = tracker.report(beforeID: beforeID, afterID: afterID, method: name,
                                     timingsMs: [Self.findObjects: totalMs, "Ingest (median per frame)": medianMs,
-                                                "Before-photo features": photoMs])
+                                                "Before-photo features": photoMs,
+                                                "Naming": namingMs])
         let shown = report.events.filter { !$0.hint }
         set(step, .done(String(format: "%d %@ · %d frames · %.1f s", shown.count, shown.count == 1 ? "object" : "objects",
                                ingestMs.count, totalMs / 1000)))

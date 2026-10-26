@@ -66,6 +66,12 @@ final class SemanticStage {
         return try result.get()
     }
 
+    /// Confirmed instances without a label, oldest first. Live: at most one is named per frame, on the preview thread.
+    /// Runs on the tracker thread through `sync`, so it waits for an ingest in progress.
+    func pendingNaming() -> [TrackedInstance] {
+        (try? sync { t in t.instances.filter { $0.label == nil && $0.isConfirmed(t.config) }.sorted { $0.id < $1.id } }) ?? []
+    }
+
     /// Frames ingested and frames dropped because a newer one arrived first.
     var counts: (ingested: Int, dropped: Int) {
         cond.lock(); defer { cond.unlock() }

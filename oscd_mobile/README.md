@@ -46,8 +46,9 @@ copy the weights the checkout already has into torch's cache:
   - Method A goes over every after-scan frame; "Also B" adds the LiDAR depth and colour cues over the same frames;
   - Results show the change masks (A | B toggle) and each stage's time;
   - after the final masks, "Find objects" runs the object tracker over the placed frames with their final masks (B's when B ran, else A's), reusing each frame's SAM2 features from a half-precision cache in `Library/Caches/detect/<after>_<before>/` that the run deletes when it ends, and rendering the before model again at each frame's pose (`MethodA.render(pose:)`); changes lying within 1 cm of the table (its height from the before-scan's LiDAR, logged as `semantic: support y`) are ignored;
+  - before matching, each confirmed `removed` object gets its feature from the before-scan's own photo that sees it best (`BeforePhotoFeature`: the keyframe into which most of its points project, SAM2 pooled over those pixels; logged as `detect: before-photo features`), and every confirmed object is named by Vision (see Settings → Name objects; a removed object from the full-size before photo, the others from the best crop the tracker kept; logged as `naming:` lines and `detect: naming`);
   - results are saved in `<after-scan>/detections/<before-scan>/` (summary.json + one JPEG per frame), with B under `B/`; the object events go to `objects.json` (an `ObjectReport`) in B's folder when B ran, else in A's.
-- **Settings:** Live view (Method A on the camera feed against the chosen before-scan) and the stage benchmark. The Live view also feeds each fused frame (A's mask, LiDAR depth and the before model's depth) to an object tracker on its own thread, and rewrites the object events to `Documents/preview/objects.json` (an `ObjectReport`) after every tracker update.
+- **Settings:** Live view (Method A on the camera feed against the chosen before-scan) and the stage benchmark. The Live view also feeds each fused frame (A's mask, LiDAR depth and the before model's depth) to an object tracker on its own thread, and rewrites the object events to `Documents/preview/objects.json` (an `ObjectReport`) after every tracker update. **Name objects** (on by default): confirmed objects are named by Vision's image classifier (`ObjectNamer`; a label needs 30 % confidence, and one under 60 % is shown with a "?"); in the Live view at most one object is named per frame, after the frame's SAM2 encodes. Off: objects are "Object N".
 
 Capture and Live view share one ARView (`SharedARView.swift`). With a second ARView, RealityKit drew the camera feed in only one of them, and Capture went black.
 
@@ -65,6 +66,7 @@ The script copies the scan off the phone, exports it, trains splatx (8,000 itera
 |---|---|
 | `-tab capture` | Open Capture |
 | `-live YES` | Open the Live view and start it |
+| `-nameObjects NO` | Turn "Name objects" off for this launch (Settings stores it; default on) |
 | `-buildReference <scan>` | Build that scan's model on the phone |
 | `-viewModel <scan>` | Open the 3D viewer; `-viewYawDeg` / `-viewPitchDeg` turn the first view |
 | `-beforeScanID <scan>` | Set the before-scan |

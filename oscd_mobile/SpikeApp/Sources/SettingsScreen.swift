@@ -5,6 +5,7 @@ struct SettingsScreen: View {
     @ObservedObject var bench: BenchmarkRunner
     @ObservedObject var preview: PreviewController
     @AppStorage(ReferenceBuilder.Quality.defaultsKey) private var quality = ReferenceBuilder.Quality.standard.rawValue
+    @AppStorage(ObjectNamer.defaultsKey) private var nameObjects = true
 
     var body: some View {
         NavigationStack {
@@ -30,6 +31,14 @@ struct SettingsScreen: View {
                         """)
                         .font(.system(size: 12)).foregroundColor(VeriColor.nickel)
                     } header: { Text("Building a scan's 3D model") }
+                    Section {
+                        Toggle("Name objects", isOn: $nameObjects)
+                        Text("""
+                        Names a changed object ("Tennis ball") with the phone's image classifier. A name under 60 % sure is shown with a "?". \
+                        Off: objects are shown as "Object 1", "Object 2".
+                        """)
+                        .font(.system(size: 12)).foregroundColor(VeriColor.nickel)
+                    } header: { Text("Objects that changed") }
                     Section("About") {
                         row("Before-scan", library.before?.label ?? "none yet")
                         row("Method A", "O-SCD: XFeat, PnP, SAM2.1, change fusion")

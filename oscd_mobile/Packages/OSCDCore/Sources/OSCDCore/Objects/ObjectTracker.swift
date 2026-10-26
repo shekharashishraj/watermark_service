@@ -245,7 +245,7 @@ public final class ObjectTracker {
     }
 
     /// `rect` grown by 20 % of its size on every side, clamped to the image.
-    static func crop(_ image: FloatImage, _ rect: PixelRect) -> FloatImage {
+    public static func crop(_ image: FloatImage, _ rect: PixelRect) -> FloatImage {
         let mx = Int((Float(rect.maxX - rect.minX + 1) * 0.2).rounded())
         let my = Int((Float(rect.maxY - rect.minY + 1) * 0.2).rounded())
         let x0 = max(0, rect.minX - mx), x1 = min(image.width - 1, rect.maxX + mx)

@@ -159,6 +159,29 @@ final class PreviewWorker {
         }
     }
 
+    private let namer = ObjectNamer()
+    /// Naming attempts per instance id, so one that Vision cannot name does not hold up the others (preview thread only).
+    private var namingTries: [Int: Int] = [:]
+    private static let maxNamingTries = 3
+
+    /// Live naming (Settings → Name objects): after `method.process` returned, so both of the frame's SAM2 encodes are
+    /// done, name at most one confirmed instance without a label from the crop the tracker kept (live crop for
+    /// sign ≥ 0, render crop for sign < 0). Vision runs on this thread; the label lands on the tracker thread.
+    private func nameOnePending(_ stage: SemanticStage) {
+        guard ObjectNamer.enabled, let i = stage.pendingNaming().first(where: { namingTries[$0.id, default: 0] < Self.maxNamingTries })
+        else { return }
+        namingTries[i.id, default: 0] += 1
+        let t = DispatchTime.now().uptimeNanoseconds
+        guard let crop = i.bestCrop, let image = ObjectNamer.cgImage(crop), let n = namer.name(image) else {
+            // Vision found nothing it is sure of; the tracker may keep a better crop, so it gets a few more tries.
+            log(String(format: "naming: object %d has no label yet (%.0f ms)", i.id, Double(DispatchTime.now().uptimeNanoseconds - t) / 1e6))
+            return
+        }
+        try? stage.sync { $0.setLabel(instance: i.id, n.label, confidence: n.confidence) }
+        log(String(format: "naming: object %d → %@ %.2f (%.0f ms)", i.id, n.label, n.confidence,
+                   Double(DispatchTime.now().uptimeNanoseconds - t) / 1e6))
+    }
+
     private func process(_ f: CameraFrame, method: MethodA, stage: SemanticStage, deliver: @escaping (PreviewResult) -> Void) {
         let W = f.intrinsics.width, H = f.intrinsics.height, n = W * H
         let K = method.anchors.intrinsics
@@ -190,6 +213,7 @@ final class PreviewWorker {
                                      100 * Double(flagged) / Double(max(judged, 1)), fused.fusedFrames),
                     details: details, objects: self?.objects, pose: out.pose, intrinsics: K))
             })
+            nameOnePending(stage)
             if out.pose == nil {
                 deliver(PreviewResult(overlayRGBA: plain, renderRGBA: nil, width: W, height: H,
                                       headline: "Can't line this view up with \(method.beforeLabel): \(out.rejection ?? "no match"). Point at the same table from about as far as that scan.",

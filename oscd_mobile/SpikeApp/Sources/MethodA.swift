@@ -45,6 +45,7 @@ final class MethodA {
         static let depthRender = "B: render the before model's depth"
         static let expectedDepth = "Render the before model's depth"
         static let cuesB = "B: depth + colour cues"
+        static let beforeDepth = "Splat the before-scan's LiDAR"
         static let perFrame = [xfeat, retrieval, matching, pnp, bundleAdjust, render, judged, sam2, sam2Live, cue, fusionWait, fusion, mask]
 
         static let refine = "Refine (O-SCD final pass)"
@@ -91,6 +92,9 @@ final class MethodA {
     private let referenceDepth: ReferenceDepth?
     /// The opened before-scan.
     let beforeStore: SessionStore
+    /// The before-scan's LiDAR inside the ROI (`BeforeDepth.points`). When set (the Live view sets it once before the
+    /// first frame), each frame's `FrameContext.dBefore` is splatted from it on this object's thread. Nil: no dBefore.
+    var beforeLiDAR: [SIMD3<Float>]?
 
     /// `withDepth` opens the before model's depth renderer without running B, so the fused callbacks'
     /// `FrameContext` carries D_ren (otherwise D_ren is all NaN and the object layer finds nothing).
@@ -211,6 +215,9 @@ final class MethodA {
         out.timings.append((Stage.sam2Live, liveEmb.ms))
         let cues = CuesA.compute(live: live, render: ren, embRender: embRender, embLive: embLive, valid: out.valid)
         lap(Stage.cue)
+        // Splatted before the snapshot, so its time rides along to the fused callback.
+        let dBefore = beforeLiDAR.map { BeforeDepth.splat(points: $0, pose: pose, intrinsics: anchors.intrinsics) }
+        if dBefore != nil { lap(Stage.beforeDepth) }
         let snapshot = out
         let W = f.intrinsics.width, H = f.intrinsics.height
         let dLive = CuesB.upsampleDepth(f.depth, confidence: f.confidence, width: f.depthWidth, height: f.depthHeight,
@@ -224,7 +231,8 @@ final class MethodA {
         }
         // `changed` and `frameID` are filled in on the fusion thread.
         let context = FrameContext(frameID: 0, pose: pose, intrinsics: anchors.intrinsics, changed: [], valid: out.valid,
-                                   dLive: dLive, dRen: dRen, live: live, render: ren, embLive: embLive, embRender: embRender)
+                                   dLive: dLive, dRen: dRen, live: live, render: ren, embLive: embLive, embRender: embRender,
+                                   dBefore: dBefore)
         submit(to: fusion, pose: pose, cue: cues.combined, valid: out.valid, snapshot: snapshot, context: context,
                counter: \.fusedFrames, deliver: fused)
         if let fusionB {

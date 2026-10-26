@@ -66,6 +66,8 @@ final class PreviewWorker {
     /// The semantic stage's newest report and per-frame ingest times (written on its thread).
     private var latestObjects: ObjectReport?
     private var ingestMs: [Double] = []
+    /// Each fused frame's before-LiDAR splat time, by the frame ID its `FrameContext` carries (guarded by `lock`).
+    private var splatMs: [Int: Double] = [:]
 
     private var objects: ObjectReport? { lock.lock(); defer { lock.unlock() }; return latestObjects }
 
@@ -112,13 +114,19 @@ final class PreviewWorker {
             log(config.supportHeight.map {
                 String(format: "semantic: support y = %.3f m (%.0f ms)", $0, Double(DispatchTime.now().uptimeNanoseconds - ts) / 1e6)
             } ?? "semantic: support y = unknown (no LiDAR points in the ROI)")
+            // The before-scan's own LiDAR: each frame's reference depth for the object layer (spec §4.4, C1).
+            let tb = DispatchTime.now().uptimeNanoseconds
+            method.beforeLiDAR = try BeforeDepth.points(of: method.beforeStore, roi: method.roi)
+            log(String(format: "semantic: before-scan LiDAR · %d points in the ROI · %.0f ms", method.beforeLiDAR?.count ?? 0,
+                       Double(DispatchTime.now().uptimeNanoseconds - tb) / 1e6))
             let stage = SemanticStage(config: config, beforeID: before.id, method: "A")
             stage.onReport = { [weak self] in self?.received($0) }
             stage.onIngest = { [weak self] frameID, stats, instances, reportMs in
                 guard let self else { return }
-                self.lock.lock(); self.ingestMs.append(stats.milliseconds); self.lock.unlock()
-                self.log(String(format: "semantic: frame %d · ingest %.1f ms · report %.1f ms · %d components · %d instances",
-                                frameID, stats.milliseconds, reportMs, stats.components, instances))
+                self.lock.lock(); self.ingestMs.append(stats.milliseconds); let splat = self.splatMs[frameID]; self.splatMs = self.splatMs.filter { $0.key > frameID }; self.lock.unlock()
+                self.log(String(format: "semantic: frame %d · before-LiDAR splat %@ · ingest %.1f ms · report %.1f ms · %d components · %d instances",
+                                frameID, splat.map { String(format: "%.1f ms", $0) } ?? "–", stats.milliseconds, reportMs,
+                                stats.components, instances))
             }
             try? FileManager.default.removeItem(at: Self.objectsURL)
             defer {
@@ -160,6 +168,9 @@ final class PreviewWorker {
             let t0 = DispatchTime.now().uptimeNanoseconds
             let out = try method.process(f, fused: { [weak self] out, fused, context in
                 // On the fusion thread, after this frame has been fused; `out` is this frame's result.
+                if let ms = out.timings.first(where: { $0.0 == MethodA.Stage.beforeDepth })?.1, let self {
+                    self.lock.lock(); self.splatMs[context.frameID] = ms; self.lock.unlock()
+                }
                 stage.submit(context)
                 let judged = out.valid.filter { $0 }.count
                 let flagged = zip(fused.changed, out.valid).filter { $0 && $1 }.count

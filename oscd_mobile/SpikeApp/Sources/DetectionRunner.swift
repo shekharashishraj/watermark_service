@@ -237,6 +237,13 @@ final class DetectionRunner: ObservableObject {
         AppLog.write(config.supportHeight.map {
             String(format: "semantic: support y = %.3f m (%.0f ms)", $0, Double(DispatchTime.now().uptimeNanoseconds - ts) / 1e6)
         } ?? "semantic: support y = unknown (no LiDAR points in the ROI)")
+        // The before-scan's own LiDAR, splatted into every frame as the reference depth (spec §4.4, C1).
+        let tb = DispatchTime.now().uptimeNanoseconds
+        let beforePoints = try BeforeDepth.points(of: method.beforeStore, roi: method.roi)
+        AppLog.write(String(format: "semantic: before-scan LiDAR · %d points in the ROI · %.0f ms%@", beforePoints.count,
+                            Double(DispatchTime.now().uptimeNanoseconds - tb) / 1e6,
+                            beforePoints.isEmpty ? " · none: no object will be reported" : ""))
+        var splatMs: [Double] = []
         let tracker = ObjectTracker(config: config)
         var ingestMs: [Double] = []
         var uncached = 0
@@ -266,10 +273,13 @@ final class DetectionRunner: ObservableObject {
             let dLive = CuesB.upsampleDepth(depth, confidence: conf, width: m.depthWidth, height: m.depthHeight, toWidth: W, toHeight: H)
             let dRen = try method.expectedDepth(pose: f.pose) ?? [Float](repeating: .nan, count: W * H)
             let mask = try method.changeMask(pose: f.pose, method: name)
+            let tsp = DispatchTime.now().uptimeNanoseconds
+            let dBefore = BeforeDepth.splat(points: beforePoints, pose: f.pose, intrinsics: method.anchors.intrinsics)
+            splatMs.append(Double(DispatchTime.now().uptimeNanoseconds - tsp) / 1e6)
             let context = FrameContext(frameID: f.id, pose: f.pose, intrinsics: method.anchors.intrinsics,
                                        changed: zip(mask, f.valid).map { $0 && $1 }, valid: f.valid, dLive: dLive, dRen: dRen,
                                        live: FloatImage(rgb8: f.rgb, width: W, height: H), render: try method.render(pose: f.pose),
-                                       embLive: emb.embLive, embRender: emb.embRender)
+                                       embLive: emb.embLive, embRender: emb.embRender, dBefore: dBefore)
             if let dumpDir {
                 let td = DispatchTime.now().uptimeNanoseconds
                 do {
@@ -296,6 +306,9 @@ final class DetectionRunner: ObservableObject {
         }
         let sorted = ingestMs.sorted()
         let medianMs = sorted.isEmpty ? 0 : (sorted[(sorted.count - 1) / 2] + sorted[sorted.count / 2]) / 2
+        let splatSorted = splatMs.sorted()
+        AppLog.write(String(format: "semantic: before-LiDAR splat per frame · median %.1f ms · max %.1f ms · %d frames",
+                            splatSorted.isEmpty ? 0 : splatSorted[splatSorted.count / 2], splatSorted.last ?? 0, splatSorted.count))
         let report = tracker.report(beforeID: beforeID, afterID: afterID, method: name,
                                     timingsMs: [Self.findObjects: totalMs, "Ingest (median per frame)": medianMs])
         let shown = report.events.filter { !$0.hint }
@@ -313,7 +326,8 @@ final class DetectionRunner: ObservableObject {
     private static func logFrame(_ f: FrameContext, _ stats: IngestStats, previous: [TrackedInstance], _ tracker: ObjectTracker) {
         let c = tracker.config
         let W = f.intrinsics.width, H = f.intrinsics.height
-        let (sign, d, offset) = ChangeSign.compute(dLive: f.dLive, dRen: f.dRen, valid: f.valid, tolerance: c.signTolerance)
+        let ref = f.dBefore ?? f.dRen                      // the tracker's reference depth
+        let (sign, d, offset) = ChangeSign.compute(dLive: f.dLive, dRen: ref, valid: f.valid, tolerance: c.signTolerance)
         var bySign = [Int8: Int](), noDepth = 0
         var bands = [Int](repeating: 0, count: 5)          // |d| < 5, 5–10, 10–20, 20–50, ≥ 50 mm
         for i in f.changed.indices where f.changed[i] {
@@ -328,14 +342,14 @@ final class DetectionRunner: ObservableObject {
             return sizes.isEmpty ? "–" : sizes.prefix(6).map(String.init).joined(separator: ",") + (sizes.count > 6 ? ",…(\(sizes.count))" : "")
         }
         AppLog.write("objects-frame: \(f.frameID) · changed +\(bySign[1] ?? 0) −\(bySign[-1] ?? 0) 0:\(bySign[0] ?? 0) nodepth \(noDepth) · offset \(String(format: "%.1f", offset * 1000)) mm · |d| mm <5 \(bands[0]) 5–10 \(bands[1]) 10–20 \(bands[2]) 20–50 \(bands[3]) ≥50 \(bands[4]) · components + [\(list(1))] − [\(list(-1))] 0 [\(list(0))] · created \(stats.created) merged \(stats.merged) dropped \(stats.dropped) · \(tracker.instances.count) instances")
-        // Each signed component back-projected as the tracker does (left points with dRen + the frame's offset): how many of its points lie within the margin of
+        // Each signed component back-projected as the tracker does (left points with the reference depth + the frame's offset): how many of its points lie within the margin of
         // the ROI's vertical faces (what drops a new instance in the frame it is created) and how many lie below
         // the support gate (ignored by the tracker).
         if let roi = c.roi {
             let toWorld = f.pose.inverse
             let o: Float = offset.isFinite ? offset : 0
             for comp in comps where comp.sign != 0 {
-                let depth = comp.sign > 0 ? f.dLive : f.dRen.map { $0 + o }
+                let depth = comp.sign > 0 ? f.dLive : ref.map { $0 + o }
                 var n = 0, edge = 0, low = 0
                 let floorY = c.supportHeight.map { $0 + c.minHeightAboveSupport }
                 var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)

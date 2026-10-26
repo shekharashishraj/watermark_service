@@ -65,7 +65,16 @@ struct PreviewView: View {
         .onAppear {
             appearToken += 1
             controller.startSession()
-            if autoStart, !controller.running, let before = library.before { controller.start(before: before) }
+            if autoStart, !controller.running, let before = library.before {
+                controller.start(before: before)
+                // `-liveStopAfter N` (with `-live YES`): press Stop after N seconds, to check the Stop path without tapping.
+                let seconds = UserDefaults.standard.integer(forKey: "liveStopAfter")
+                if seconds > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(seconds)) {
+                        if controller.running { AppLog.write("live: stop after \(seconds) s (-liveStopAfter)"); controller.stop() }
+                    }
+                }
+            }
             if library.before == nil { controller.status = "No scan has a 3D model yet. See Settings › Building a scan's 3D model." }
         }
         .onDisappear { controller.stopSession() }

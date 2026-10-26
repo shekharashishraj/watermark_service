@@ -1,3 +1,4 @@
+import OSCDCore
 import RealityKit
 import SwiftUI
 
@@ -9,6 +10,7 @@ struct PreviewView: View {
     var autoStart = false
     @State private var showTimings = false
     @State private var appearToken = 0
+    @State private var highlighted: Int?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -16,7 +18,7 @@ struct PreviewView: View {
             VStack(spacing: 8) {
                 beforePicker
                 HStack(alignment: .top, spacing: 8) {
-                    panel(controller.overlay, title: "Changes")
+                    panel(controller.overlay, title: "Changes", showObjects: true)
                     panel(controller.reference, title: "\(library.before?.label ?? "Before-scan") from here")
                 }
                 if !controller.headline.isEmpty {
@@ -24,6 +26,15 @@ struct PreviewView: View {
                         .font(.footnote)
                         .padding(8)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                if let objects = controller.objects, !objects.events.isEmpty {
+                    ScrollView {
+                        ObjectEventList(report: objects, compact: true, highlighted: $highlighted)
+                            .padding(8)
+                    }
+                    .frame(maxHeight: 96)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
                 if showTimings, !controller.details.isEmpty {
                     Text(controller.details)
@@ -85,10 +96,20 @@ struct PreviewView: View {
         .disabled(controller.running)
     }
 
-    @ViewBuilder private func panel(_ image: UIImage?, title: String) -> some View {
+    @ViewBuilder private func panel(_ image: UIImage?, title: String, showObjects: Bool = false) -> some View {
         VStack(spacing: 2) {
             if let image {
-                Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 6))
+                Image(uiImage: image).resizable().scaledToFit()
+                    .overlay {
+                        // The latest placed frame's pose; the image shown is that frame (rotated .right), so the arrows
+                        // line up with the red blob.
+                        if showObjects, let report = controller.objects, let pose = controller.lastPose,
+                           let intrinsics = controller.lastIntrinsics {
+                            ObjectOverlay(report: report, pose: pose, intrinsics: intrinsics, orientation: .sensorRight,
+                                          highlighted: highlighted)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
             } else {
                 RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.4)).aspectRatio(3.0 / 4.0, contentMode: .fit)
             }

@@ -20,6 +20,11 @@ enum VeriColor {
     static let failChipBg = Color(hex: 0xFFEBEE)
     static let failChipFg = Color(hex: 0xC62828)
     static let infoBannerBg = Color(red: 223 / 255, green: 241 / 255, blue: 253 / 255)
+    // Object events: legible over the red change mask.
+    static let moved = Color(hex: 0xFFB000)
+    static let added = darkGreen
+    static let removed = Color(hex: 0x7A8FA6)
+    static let altered = Color(hex: 0x9B6BD6)
 }
 
 extension Color {

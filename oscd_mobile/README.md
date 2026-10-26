@@ -45,7 +45,7 @@ copy the weights the checkout already has into torch's cache:
   - choose the before-scan (it needs a 3D model) and the after-scan, then Run;
   - Method A goes over every after-scan frame; "Also B" adds the LiDAR depth and colour cues over the same frames;
   - Results show the change masks (A | B toggle) and each stage's time;
-  - after the final masks, "Find objects" runs the object tracker over the placed frames with their final masks (B's when B ran, else A's), reusing each frame's SAM2 features from a half-precision cache in `Library/Caches/detect/<after>_<before>/` that the run deletes when it ends;
+  - after the final masks, "Find objects" runs the object tracker over the placed frames with their final masks (B's when B ran, else A's), reusing each frame's SAM2 features from a half-precision cache in `Library/Caches/detect/<after>_<before>/` that the run deletes when it ends, and rendering the before model again at each frame's pose (`MethodA.render(pose:)`); changes lying within 1 cm of the table (its height from the before-scan's LiDAR, logged as `semantic: support y`) are ignored;
   - results are saved in `<after-scan>/detections/<before-scan>/` (summary.json + one JPEG per frame), with B under `B/`; the object events go to `objects.json` (an `ObjectReport`) in B's folder when B ran, else in A's.
 - **Settings:** Live view (Method A on the camera feed against the chosen before-scan) and the stage benchmark. The Live view also feeds each fused frame (A's mask, LiDAR depth and the before model's depth) to an object tracker on its own thread, and rewrites the object events to `Documents/preview/objects.json` (an `ObjectReport`) after every tracker update.
 
@@ -68,7 +68,7 @@ The script copies the scan off the phone, exports it, trains splatx (8,000 itera
 | `-buildReference <scan>` | Build that scan's model on the phone |
 | `-viewModel <scan>` | Open the 3D viewer; `-viewYawDeg` / `-viewPitchDeg` turn the first view |
 | `-beforeScanID <scan>` | Set the before-scan |
-| `-detectObjects YES` | With `-detectBefore`/`-detectAfter`: also write the object report to `app-log.txt` as one `objects:` JSON line, plus diagnostics: `objects-roi:` (the ROI box), per frame `objects-frame:` (changed pixels by depth sign and \|d\| band, components, created/merged/dropped), `objects-comp:` (each signed component's points and how many lie within the ROI edge margin) and `objects-gone:` (instances merged or dropped), and at the end one `objects-instance:` line per tracked instance and one `objects-score:` line per left × arrived pair |
+| `-detectObjects YES` | With `-detectBefore`/`-detectAfter`: also write the object report to `app-log.txt` as one `objects:` JSON line, plus diagnostics: `objects-roi:` (the ROI box), per frame `objects-frame:` (changed pixels by depth sign and \|d\| band, components, created/merged/dropped), `objects-comp:` (each signed component's points, how many lie within the edge margin of the ROI's vertical faces and how many below the support gate) and `objects-gone:` (instances merged or dropped), and at the end one `objects-instance:` line per tracked instance and one `objects-score:` line per left × arrived pair |
 
 **Capture checks:** at Stop, `app-log.txt` gets one `capture stats:` line:
 - frame gap (median, max) and `didUpdate` time (median, p95, max): does keyframe selection slow the camera down?
@@ -79,8 +79,8 @@ The script copies the scan off the phone, exports it, trains splatx (8,000 itera
 Each keyframe in `session.json` keeps `stats.sharpness`, `stats.firstSharpness` and `stats.candidates`, and the line `capture: scanned area …` gives the box's size.
 
 **On-phone logs** (pull with `xcrun devicectl device copy from ... --source Documents/<file>`):
-- `Documents/app-log.txt`: camera, screen and build events, including each session's first-frame brightness; after each Detect run's "Find objects", one `detect: find objects` line (frames ingested, time, median ingest ms, ICP fits, each event's summary);
-- `Documents/preview-log.txt`: one line per Live view frame; per tracked frame a `semantic:` line (frame, ingest and report time in ms, components, instances) and an `objects:` line (event count and each event's summary); at Stop one `semantic:` line with frames ingested, frames dropped and the median ingest time.
+- `Documents/app-log.txt`: camera, screen and build events, including each session's first-frame brightness; after each Detect run's "Find objects", one `semantic: support y` line and one `detect: find objects` line (frames ingested, time, median ingest ms, ICP fits, each event's summary);
+- `Documents/preview-log.txt`: one line per Live view frame; at start one `semantic: support y` line (the table height the object layer gates on); per tracked frame a `semantic:` line (frame, ingest and report time in ms, components, instances) and an `objects:` line (event count and each event's summary); at Stop one `semantic:` line with frames ingested, frames dropped and the median ingest time.
 
 When building the app, check the build log for warnings as well as errors: the Live view bug of 2026-10-19 was flagged only by a warning.
 

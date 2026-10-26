@@ -7,6 +7,8 @@ public struct TrackerConfig: Sendable {
     public var signTolerance: Float = 0.005; public var dropAfterObserved = 10; public var dropMinMisses = 5
     public var reservoir = 2000; public var matchAccept: Float = 0.55; public var matchLow: Float = 0.40
     public var roi: AABB?
+    /// World y of the table (`SupportPlane`); when set, points less than `minHeightAboveSupport` above it are ignored.
+    public var supportHeight: Float? = nil; public var minHeightAboveSupport: Float = 0.01
     public init() {}
 }
 
@@ -86,11 +88,19 @@ public final class ObjectTracker {
         let toWorld = f.pose.inverse
         var gain: SIMD3<Float>?
         var touched = Set<Int>()
+        // Points less than `minHeightAboveSupport` above the table are the sheet, not an object (spec §4.4).
+        let floorY = config.supportHeight.map { $0 + config.minHeightAboveSupport }
         for c in components {
             let depth = c.sign >= 0 ? f.dLive : f.dRen
             var points: [SIMD3<Float>] = [], cells: [VoxelKey: Int] = [:]
             for i in c.pixels where depth[i].isFinite && depth[i] > 0 {
-                let p = toWorld.apply(f.intrinsics.unproject(SIMD2(Float(i % w), Float(i / w)), depth: depth[i]))
+                let uv = SIMD2(Float(i % w), Float(i / w))
+                let p = toWorld.apply(f.intrinsics.unproject(uv, depth: depth[i]))
+                if let floorY, p.y < floorY {
+                    // A flat pixel counts when either surface (live or reference) clears the table.
+                    guard c.sign == 0, f.dRen[i].isFinite, f.dRen[i] > 0,
+                          toWorld.apply(f.intrinsics.unproject(uv, depth: f.dRen[i])).y >= floorY else { continue }
+                }
                 points.append(p); cells[VoxelKey(p, size: config.voxelSize), default: 0] += 1
             }
             guard !points.isEmpty else { continue }
@@ -141,11 +151,15 @@ public final class ObjectTracker {
             instances.remove(at: j)
         }
 
-        // Instances reaching within the edge margin of the ROI box are dropped, for all signs.
+        // Instances reaching within the edge margin of the ROI box's four vertical faces are dropped, for all signs.
+        // Not the floor or ceiling: an object resting on the table always reaches the ROI's floor band (spec §4.4).
         if let roi = config.roi {
             let m = config.roiEdgeMargin
             let before = instances.count
-            instances.removeAll { any($0.bbox.min - roi.min .< m) || any(roi.max - $0.bbox.max .< m) }
+            instances.removeAll {
+                let lo = $0.bbox.min - roi.min, hi = roi.max - $0.bbox.max
+                return lo.x < m || lo.z < m || hi.x < m || hi.z < m
+            }
             stats.dropped += before - instances.count
         }
 

@@ -231,6 +231,12 @@ final class DetectionRunner: ObservableObject {
         let name = method.hasB ? "B" : "A"
         var config = TrackerConfig()
         config.roi = method.roi
+        // The table's height from the before-scan's LiDAR: changes lying on it are the sheet, not objects.
+        let ts = DispatchTime.now().uptimeNanoseconds
+        config.supportHeight = try SupportPlane.height(of: method.beforeStore, roi: method.roi)
+        AppLog.write(config.supportHeight.map {
+            String(format: "semantic: support y = %.3f m (%.0f ms)", $0, Double(DispatchTime.now().uptimeNanoseconds - ts) / 1e6)
+        } ?? "semantic: support y = unknown (no LiDAR points in the ROI)")
         let tracker = ObjectTracker(config: config)
         var ingestMs: [Double] = []
         var uncached = 0
@@ -307,32 +313,36 @@ final class DetectionRunner: ObservableObject {
             return sizes.isEmpty ? "–" : sizes.prefix(6).map(String.init).joined(separator: ",") + (sizes.count > 6 ? ",…(\(sizes.count))" : "")
         }
         AppLog.write("objects-frame: \(f.frameID) · changed +\(bySign[1] ?? 0) −\(bySign[-1] ?? 0) 0:\(bySign[0] ?? 0) nodepth \(noDepth) · |d| mm <5 \(bands[0]) 5–10 \(bands[1]) 10–20 \(bands[2]) 20–50 \(bands[3]) ≥50 \(bands[4]) · components + [\(list(1))] − [\(list(-1))] 0 [\(list(0))] · created \(stats.created) merged \(stats.merged) dropped \(stats.dropped) · \(tracker.instances.count) instances")
-        // Each signed component back-projected as the tracker does: how many of its points lie within the ROI edge
-        // margin (or outside), which is what drops a new instance in the frame it is created.
+        // Each signed component back-projected as the tracker does: how many of its points lie within the margin of
+        // the ROI's vertical faces (what drops a new instance in the frame it is created) and how many lie below
+        // the support gate (ignored by the tracker).
         if let roi = c.roi {
             let toWorld = f.pose.inverse
             for comp in comps where comp.sign != 0 {
                 let depth = comp.sign > 0 ? f.dLive : f.dRen
-                var n = 0, edge = 0
+                var n = 0, edge = 0, low = 0
+                let floorY = c.supportHeight.map { $0 + c.minHeightAboveSupport }
                 var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
                 var ys: [Float] = []
                 for i in comp.pixels where depth[i].isFinite && depth[i] > 0 {
                     let p = toWorld.apply(f.intrinsics.unproject(SIMD2(Float(i % W), Float(i / W)), depth: depth[i]))
                     n += 1; ys.append(p.y)
                     lo = simd_min(lo, p); hi = simd_max(hi, p)
-                    if any(p - roi.min .< c.roiEdgeMargin) || any(roi.max - p .< c.roiEdgeMargin) { edge += 1 }
+                    let below = p - roi.min, above = roi.max - p, m = c.roiEdgeMargin
+                    if below.x < m || below.z < m || above.x < m || above.z < m { edge += 1 }
+                    if let floorY, p.y < floorY { low += 1 }
                 }
                 guard n > 0 else { continue }
                 ys.sort()
-                AppLog.write(String(format: "objects-comp: %d · sign %+d · %d px · %d points · %d at the ROI edge · median y %.3f · box (%.2f, %.2f, %.2f)–(%.2f, %.2f, %.2f)",
-                                    f.frameID, Int(comp.sign), comp.pixels.count, n, edge, ys[ys.count / 2], lo.x, lo.y, lo.z, hi.x, hi.y, hi.z))
+                AppLog.write(String(format: "objects-comp: %d · sign %+d · %d px · %d points · %d at the ROI sides · %d below the support gate · median y %.3f · box (%.2f, %.2f, %.2f)–(%.2f, %.2f, %.2f)",
+                                    f.frameID, Int(comp.sign), comp.pixels.count, n, edge, low, ys[ys.count / 2], lo.x, lo.y, lo.z, hi.x, hi.y, hi.z))
             }
         }
         let now = Set(tracker.instances.map(\.id))
         for i in previous where !now.contains(i.id) {
             let edge = c.roi.map { roi in
                 let lo = i.bbox.min - roi.min, hi = roi.max - i.bbox.max
-                return String(format: "edge gap %.3f", min(lo.min(), hi.min()))
+                return String(format: "side gap %.3f", min(lo.x, lo.z, hi.x, hi.z))
             } ?? ""
             AppLog.write(String(format: "objects-gone: id %d · sign %+d · %@ · %d voxels · %d frames · observed %d misses %d · bbox (%.2f, %.2f, %.2f)–(%.2f, %.2f, %.2f) before this frame · %@",
                                 i.id, Int(i.sign), i.isConfirmed(c) ? "confirmed" : "unconfirmed", i.voxelCount, i.frames.count,

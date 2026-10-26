@@ -136,6 +136,50 @@ final class ObjectTrackerTests: XCTestCase {
         XCTAssertEqual(far.instances.count, 1)
     }
 
+    /// The edge drop applies to the four vertical faces only: an object resting on the table touches the ROI's floor band.
+    func testInstanceTouchingRoiFloorIsKeptButSideIsDropped() throws {
+        let probe = ObjectTracker(config: config())
+        probe.ingest(blockFrame(id: 0))
+        let box = try XCTUnwrap(probe.instances.first).bbox
+
+        var c = config()
+        c.roi = AABB(min: SIMD3(-1, box.min.y - 0.001, 0), max: SIMD3(1, 1, 1))
+        let floor = ObjectTracker(config: c)
+        floor.ingest(blockFrame(id: 0))
+        XCTAssertEqual(floor.instances.count, 1, "touching the ROI's min-y face must not drop it")
+
+        c.roi = AABB(min: SIMD3(box.min.x - 0.001, -1, 0), max: SIMD3(1, 1, 1))
+        let side = ObjectTracker(config: c)
+        let stats = side.ingest(blockFrame(id: 0))
+        XCTAssertEqual(side.instances.count, 0, "within the margin of the min-x face it is still dropped")
+        XCTAssertEqual(stats.dropped, 1)
+    }
+
+    /// A changed patch whose points lie at table height (|d| = 3 cm) adds nothing once the support height is known.
+    func testChangeAtTableHeightIsIgnoredWithSupportHeight() throws {
+        let ungated = ObjectTracker(config: config())
+        ungated.ingest(blockFrame(id: 0, live: 0.47, rendered: 0.50))
+        let top = try XCTUnwrap(ungated.instances.first).bbox.max.y       // every point's y is below this
+
+        var c = config()
+        c.supportHeight = top
+        let gated = ObjectTracker(config: c)
+        let stats = gated.ingest(blockFrame(id: 0, live: 0.47, rendered: 0.50))
+        XCTAssertEqual(gated.instances.count, 0)
+        XCTAssertEqual(stats.components, 0)
+
+        // The same for a left patch (its points come from the rendered depth).
+        let left = ObjectTracker(config: c)
+        left.ingest(blockFrame(id: 0, live: 0.50, rendered: 0.47))
+        XCTAssertEqual(left.instances.count, 0)
+
+        // A support plane well below the patch keeps it.
+        c.supportHeight = top - 1
+        let low = ObjectTracker(config: c)
+        low.ingest(blockFrame(id: 0, live: 0.47, rendered: 0.50))
+        XCTAssertEqual(low.instances.count, 1)
+    }
+
     func testUnconfirmedInstanceIsDroppedAfterMisses() {
         let t = ObjectTracker(config: config())
         t.ingest(blockFrame(id: 0))

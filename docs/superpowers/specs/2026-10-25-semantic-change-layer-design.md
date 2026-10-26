@@ -55,6 +55,8 @@ and the new spot, the Live view says "Ball: moved 14 cm" with an arrow from wher
 - Speech output. Telling identical objects apart (two identical cups: the nearest pairing wins and is marked low
   confidence).
 - Any change to Methods A or B, to fusion, or to the O-SCD parity tests.
+- Objects under 1 cm tall (a sheet of paper, a flat cable): their points lie within the support gate (§4.4) and are
+  not reported.
 
 ### 2.3 Anti-goals (what would make it a failure even if it "works")
 - A confident wrong story: a false `moved` arrow between two unrelated changes, or a label stated as a fact.
@@ -137,6 +139,7 @@ only until the frame's fused callback has run (one frame of back-pressure, as to
    `flat = changed ∧ sign==0`. A component's sign is the |d|-weighted majority of its pixels, so LiDAR noise at a
    few pixels does not split it.
 3. 4-connected components on each, dropping components under **40 px** (≈ a 1.3 cm object at 40 cm; tunable).
+   A component whose back-projected points all lie on the table adds nothing (the support gate, §4.4).
 4. Per component: pixel list, bounding box, pooled SAM2 feature (mean of the 64×64 cells its pixels fall in, from
    `embLive` for `arrived`/`flat`, from `embRender` for `left`), and a CIELAB colour histogram (L 4 × a 8 × b 8
    bins; from the live image for `arrived`/`flat`, from the gain-aligned render for `left`, reusing
@@ -148,6 +151,16 @@ Each component's pixels become world points:
 - `left`: `world = pose⁻¹ · K.unproject(uv, dRen)` — the surface the reference had there.
 Pixels with no finite depth of the needed kind are skipped. Points are hashed into **1 cm voxels** (`SIMD3<Int32>`
 key); each component yields a voxel set.
+
+**Support gate (R26).** Before voxelising, points less than **1 cm** (`minHeightAboveSupport`) above the table are
+dropped: the `dLive` point for `arrived`/`flat`, the `dRen` point for `left`; a `flat` pixel is kept when either its
+`dLive` or its `dRen` point clears the gate. The table height (`supportHeight`, world y) is the mode of y over the
+before-scan's high-confidence LiDAR points inside the ROI (`SupportPlane`: 1 cm histogram, refined by the median of
+the winning bin; ≤ 60 keyframes), computed once per run in Detect and in Live. Why: on Scan 4 → 5 and even on the
+unchanged Scan 4 → 4, Method B's final masks flag 17–37 % of the judged area, mostly the floral sheet, where LiDAR
+and the model's depth disagree by 10–50 mm (both signs); those regions became confirmed `removed`/`added` instances
+of up to ~2 000 voxels, which no confirmation floor removes without also removing the objects. A surface lying on
+the table is the sheet, not an object. Without a support height (nil) nothing is gated.
 
 Instances are tracked per sign. A new component is merged into an existing instance of the **same sign** when
 `|overlap| / min(|new|, |instance|) ≥ 0.3`; if several qualify, they and the component are merged into one. Otherwise
@@ -166,8 +179,12 @@ or `left` instance are absorbed into it. Only confirmed instances produce events
 **`flat` never confirms (my call).** The unchanged pair (Scan 4 → Scan 4) shows persistent bands along the sheet's
 far and left edges with depth agreeing, which pass every floor above. Rather than add a colour-cue vote that Live
 does not compute, `flat` instances stay **hints**: shown greyed as "look changed here?" in the Live list and the
-results, never counted as events, never matched, and excluded from §7's counts. Instances whose bbox touches the
-ROI boundary within 2 cm are dropped outright, for all signs.
+results, never counted as events, never matched, and excluded from §7's counts. Instances whose bbox comes within
+2 cm of one of the ROI's four **vertical faces** (min/max x and z) are dropped outright, for all signs. The floor and
+ceiling faces are exempt (R26): the scan's ROI floor sits only 1–3 cm under the table (Scan 4: y_min −0.468 m, live
+table −0.445 … −0.462 m), so every object resting on the table reached the floor band and was dropped the frame it
+appeared (on Scan 4 → 5, 145 of 226 arrived components had points there, 71 entirely); the table itself is handled by
+the support gate above.
 
 ### 4.5 Step 3: events
 Recomputed from the confirmed instances after every frame (tens of instances; trivial cost):

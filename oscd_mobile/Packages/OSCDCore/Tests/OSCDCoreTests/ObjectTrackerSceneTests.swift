@@ -40,11 +40,20 @@ final class ObjectTrackerSceneTests: XCTestCase {
               after: [sphereA(at: aAfter), cubeB(yaw: 40), cubeD])
     }
 
-    func tracker() -> ObjectTracker {
+    func tracker(supportHeight: Float? = nil) -> ObjectTracker {
         var c = TrackerConfig()
         c.roi = roi
+        c.supportHeight = supportHeight
         return ObjectTracker(config: c)
     }
+
+    /// Table patches away from every object whose live depth reads 12–50 mm too far (B's sheet false positives).
+    let sheetNoise: [Scene.SheetPatch] = [
+        .init(centre: SIMD2(0.05, -0.22), radius: 0.06, offset: 0.03),
+        .init(centre: SIMD2(-0.28, 0.0), radius: 0.05, offset: 0.05),
+        .init(centre: SIMD2(0.25, -0.2), radius: 0.05, offset: 0.012),
+        .init(centre: SIMD2(0.05, 0.28), radius: 0.06, offset: 0.02),
+    ]
 
     /// Ingests the 10 orbit frames, then measures every matched pair with the planar ICP.
     @discardableResult
@@ -112,8 +121,32 @@ final class ObjectTrackerSceneTests: XCTestCase {
     }
 
     func testThreeObjectsGiveThreeEvents() {
-        let t = tracker()
-        run(changedScene, into: t)
+        assertThreeEvents(changedScene, tracker())
+    }
+
+    /// With B's sheet-level noise in the after scene and the support height known, the same three events and nothing else.
+    func testThreeObjectsGiveThreeEventsDespiteSheetNoise() {
+        var scene = changedScene
+        scene.sheetNoise = sheetNoise
+        assertThreeEvents(scene, tracker(supportHeight: scene.tableY))
+    }
+
+    func testSheetNoiseAloneGivesNoEvents() {
+        let objects = [sphereA(at: aBefore), cubeB(yaw: 0), cubeC]
+        var scene = Scene(before: objects, after: objects)
+        scene.sheetNoise = sheetNoise
+        let t = tracker(supportHeight: scene.tableY)
+        run(scene, into: t)
+        XCTAssertEqual(t.events().filter { !$0.hint }.count, 0, t.events().map(Self.describe).joined(separator: "\n"))
+
+        // Not vacuous: without the support height the same noise becomes confirmed events.
+        let ungated = tracker()
+        run(scene, into: ungated)
+        XCTAssertGreaterThan(ungated.events().filter { !$0.hint }.count, 0)
+    }
+
+    func assertThreeEvents(_ scene: Scene, _ t: ObjectTracker, file: StaticString = #filePath, line: UInt = #line) {
+        run(scene, into: t)
         let events = t.events().filter { !$0.hint }
         let log = events.map(Self.describe).joined(separator: "\n")
         print("Synthetic scene events:\n" + log)

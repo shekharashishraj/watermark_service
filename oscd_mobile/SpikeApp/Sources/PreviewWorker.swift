@@ -106,6 +106,12 @@ final class PreviewWorker {
             let method = try MethodA(beforeScan: before.url, beforeLabel: before.label, withDepth: true) { status($0) }
             var config = TrackerConfig()
             config.roi = method.roi
+            // The table's height from the before-scan's LiDAR: changes lying on it are the sheet, not objects.
+            let ts = DispatchTime.now().uptimeNanoseconds
+            config.supportHeight = try SupportPlane.height(of: method.beforeStore, roi: method.roi)
+            log(config.supportHeight.map {
+                String(format: "semantic: support y = %.3f m (%.0f ms)", $0, Double(DispatchTime.now().uptimeNanoseconds - ts) / 1e6)
+            } ?? "semantic: support y = unknown (no LiDAR points in the ROI)")
             let stage = SemanticStage(config: config, beforeID: before.id, method: "A")
             stage.onReport = { [weak self] in self?.received($0) }
             stage.onIngest = { [weak self] frameID, stats, instances, reportMs in

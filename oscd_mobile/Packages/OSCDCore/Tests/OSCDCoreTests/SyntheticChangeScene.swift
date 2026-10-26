@@ -11,12 +11,17 @@ struct SyntheticChangeScene {
         case box(centre: SIMD3<Float>, half: SIMD3<Float>, yawDeg: Float)
     }
     struct Object { var shape: Shape; var feature: [Float]; var colour: SIMD3<Float> }
+    /// A disc of the table (world x, z) where the after scene's live depth reads `offset` metres farther than the
+    /// table: the sheet-level false positives Method B's masks show on the phone (|d| 10–50 mm, flagged as changed).
+    struct SheetPatch { var centre: SIMD2<Float>; var radius: Float; var offset: Float }
 
     var before: [Object]
     var after: [Object]
     var tableY: Float = 0
     var tableFeature: [Float] = (0..<256).map { $0 >= 224 ? 1 : 0 }
     var tableColour = SIMD3<Float>(0.55, 0.45, 0.35)
+    /// Sheet-level depth noise added to the after scene's table pixels (none by default).
+    var sheetNoise: [SheetPatch] = []
 
     static let intrinsics = Intrinsics.oscdCentered(f: 140, width: 160, height: 120)
     static let grid = 64, channels = 256
@@ -26,7 +31,12 @@ struct SyntheticChangeScene {
     /// valid = both rays hit inside `roi`, changed = valid ∧ |dLive − dRen| > 0.01.
     func frame(id: Int, pose: Pose, roi: AABB) -> FrameContext {
         let K = Self.intrinsics
-        let ren = cast(before, pose: pose), live = cast(after, pose: pose)
+        let ren = cast(before, pose: pose)
+        var live = cast(after, pose: pose)
+        for i in live.depth.indices where live.hit[i] == -1 {
+            let p = SIMD2(live.points[i].x, live.points[i].z)
+            if let patch = sheetNoise.first(where: { simd_distance(p, $0.centre) < $0.radius }) { live.depth[i] += patch.offset }
+        }
         let n = K.width * K.height
         var valid = [Bool](repeating: false, count: n), changed = valid
         for i in 0..<n {

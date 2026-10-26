@@ -160,6 +160,20 @@ final class SemanticStage {
     }
 }
 
+/// Settings that feed the object layer's `TrackerConfig`.
+enum ObjectSettings {
+    static let minVoxelsKey = "minObjectVoxels"
+    static let minVoxelsDefault = 15
+    static let minVoxelsRange = 5...60
+
+    /// Smallest object (voxels of 1 cm) that is reported; `TrackerConfig.confirmVoxels`. Launch argument `-minObjectVoxels N` works too.
+    static var minVoxels: Int {
+        let d = UserDefaults.standard
+        guard d.object(forKey: minVoxelsKey) != nil else { return minVoxelsDefault }
+        return min(max(d.integer(forKey: minVoxelsKey), minVoxelsRange.lowerBound), minVoxelsRange.upperBound)
+    }
+}
+
 enum SemanticStageError: LocalizedError {
     case closed
     var errorDescription: String? { "The object tracker has stopped." }

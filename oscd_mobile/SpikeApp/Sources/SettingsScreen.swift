@@ -6,6 +6,7 @@ struct SettingsScreen: View {
     @ObservedObject var preview: PreviewController
     @AppStorage(ReferenceBuilder.Quality.defaultsKey) private var quality = ReferenceBuilder.Quality.standard.rawValue
     @AppStorage(ObjectNamer.defaultsKey) private var nameObjects = true
+    @AppStorage(ObjectSettings.minVoxelsKey) private var minVoxels = ObjectSettings.minVoxelsDefault
 
     var body: some View {
         NavigationStack {
@@ -32,6 +33,21 @@ struct SettingsScreen: View {
                         .font(.system(size: 12)).foregroundColor(VeriColor.nickel)
                     } header: { Text("Building a scan's 3D model") }
                     Section {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Smallest object")
+                                Spacer()
+                                Text("\(minVoxels) voxels").foregroundColor(VeriColor.nickel)
+                            }
+                            Slider(value: Binding(get: { Double(minVoxels) }, set: { minVoxels = Int($0.rounded()) }),
+                                   in: Double(ObjectSettings.minVoxelsRange.lowerBound)...Double(ObjectSettings.minVoxelsRange.upperBound),
+                                   step: 5)
+                        }
+                        Text("""
+                        A change smaller than this many 1 cm voxels is not reported as an object (the tennis ball in the test scans covers about 170 to 200). \
+                        Lower finds smaller things and raises false alarms.
+                        """)
+                        .font(.system(size: 12)).foregroundColor(VeriColor.nickel)
                         Toggle("Name objects", isOn: $nameObjects)
                         Text("""
                         Names a changed object ("Tennis ball") with the phone's image classifier. A name under 60 % sure is shown with a "?". \

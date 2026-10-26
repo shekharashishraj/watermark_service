@@ -231,6 +231,7 @@ final class DetectionRunner: ObservableObject {
         let name = method.hasB ? "B" : "A"
         var config = TrackerConfig()
         config.roi = method.roi
+        config.confirmVoxels = ObjectSettings.minVoxels
         // The table's height from the before-scan's LiDAR: changes lying on it are the sheet, not objects.
         let ts = DispatchTime.now().uptimeNanoseconds
         config.supportHeight = try SupportPlane.height(of: method.beforeStore, roi: method.roi)

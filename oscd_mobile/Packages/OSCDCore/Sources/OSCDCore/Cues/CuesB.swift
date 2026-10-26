@@ -57,11 +57,12 @@ public enum CuesB {
         return (cue, sign)
     }
 
-    public static func colorCue(live: FloatImage, render: FloatImage, liveDepth: [Float], renderDepth: [Float],
-                                valid: [Bool], params p: Params = Params()) -> [Float] {
+    /// The per-channel median gain aligning the render to the live frame (the first step of `colorCue`),
+    /// from pixels where depth agrees; 1 for a channel with fewer than `gainMinPixels` such pixels.
+    public static func renderGain(live: FloatImage, render: FloatImage, liveDepth: [Float], renderDepth: [Float],
+                                  valid: [Bool], params p: Params = Params()) -> SIMD3<Float> {
         let n = live.width * live.height
-        // 1. Per-channel gain aligning the render to the live frame, from pixels where depth agrees.
-        var gain: [Float] = [1, 1, 1]
+        var gain = SIMD3<Float>(repeating: 1)
         var ratios: [[Float]] = [[], [], []]
         for i in 0..<n where valid[i] && liveDepth[i].isFinite && renderDepth[i].isFinite
                              && abs(liveDepth[i] - renderDepth[i]) < p.gainAgreeDepth {
@@ -71,6 +72,15 @@ public enum CuesB {
             let s = ratios[c].sorted()
             gain[c] = s[s.count / 2]
         }
+        return gain
+    }
+
+    public static func colorCue(live: FloatImage, render: FloatImage, liveDepth: [Float], renderDepth: [Float],
+                                valid: [Bool], params p: Params = Params()) -> [Float] {
+        let n = live.width * live.height
+        // 1. Per-channel gain aligning the render to the live frame, from pixels where depth agrees.
+        let gain = renderGain(live: live, render: render, liveDepth: liveDepth, renderDepth: renderDepth,
+                              valid: valid, params: p)
         var adjusted = render
         for c in 0..<3 { for i in 0..<n { adjusted.data[c * n + i] = min(1, render.data[c * n + i] * gain[c]) } }
         // 2. Light blur. 3. CIELAB difference with lightness down-weighted. 4. Absolute ramp. 5. L* masks.

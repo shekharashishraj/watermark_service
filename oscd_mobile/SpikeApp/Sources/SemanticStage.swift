@@ -133,17 +133,15 @@ final class SemanticStage {
         tracker.report(beforeID: beforeID, afterID: nil, method: method, timingsMs: ["Ingest (last frame)": lastIngestMs])
     }
 
-    /// Queues one PlanarICP fit per matched pair that has no measured move and no fit in flight.
+    /// Queues one PlanarICP fit per matched pair that has no measured move and no fit in flight. The same pairs, inputs
+    /// and fit as `ObjectTracker.fitMotions()`, but asynchronous so the tracker thread keeps ingesting.
     private func startFits() {
         for m in tracker.pairsNeedingMotion() {
             let key = PairID(left: m.leftID, arrived: m.arrivedID)
-            guard !fitting.contains(key),
-                  let left = tracker.instances.first(where: { $0.id == m.leftID }),
-                  let arrived = tracker.instances.first(where: { $0.id == m.arrivedID }) else { continue }
+            guard !fitting.contains(key), let (source, target) = tracker.motionInputs(m) else { continue }
             fitting.insert(key)
-            let source = left.points, target = arrived.points
             fitQueue.async { [weak self] in
-                let motion = PlanarICP.fit(source: source, target: target)
+                let motion = ObjectTracker.measureMotion(source: source, target: target)
                 self?.enqueue { [weak self] in self?.landFit(key, motion) }
             }
         }

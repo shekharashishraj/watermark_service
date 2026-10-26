@@ -286,14 +286,9 @@ final class DetectionRunner: ObservableObject {
             if details { Self.logFrame(context, stats, previous: previous, tracker) }
             set(step, .active("\(k + 1) / \(kept.count) · \(tracker.instances.count) candidates"))
         }
-        var fits = 0
-        for pair in tracker.pairsNeedingMotion() {
-            guard let l = tracker.instances.first(where: { $0.id == pair.leftID }),
-                  let a = tracker.instances.first(where: { $0.id == pair.arrivedID }) else { continue }
-            set(step, .active("Measuring how object \(l.id) moved…"))
-            tracker.setMotion(leftID: l.id, arrivedID: a.id, PlanarICP.fit(source: l.points, target: a.points))
-            fits += 1
-        }
+        let fits = tracker.fitMotions(willFit: { set(step, .active("Measuring how object \($0.leftID) moved…")) },
+                                      stop: { isCancelled })
+        if isCancelled { throw PreviewError.message("Cancelled") }
         let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6 - dumpMs
         if dumpDir != nil {
             AppLog.write(String(format: "detect: dumped %d frames to %@/detections/%@/frames · %.0f ms (not counted in find objects)", dumped,

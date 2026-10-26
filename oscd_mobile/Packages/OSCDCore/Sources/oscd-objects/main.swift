@@ -82,13 +82,7 @@ for d in frameDirs {
     let f = try FrameContextIO.read(frameDir: d.url)
     ingestMs.append(tracker.ingest(f).milliseconds)
 }
-var fits = 0
-for pair in tracker.pairsNeedingMotion() {
-    guard let l = tracker.instances.first(where: { $0.id == pair.leftID }),
-          let a = tracker.instances.first(where: { $0.id == pair.arrivedID }) else { continue }
-    tracker.setMotion(leftID: l.id, arrivedID: a.id, PlanarICP.fit(source: l.points, target: a.points))
-    fits += 1
-}
+let fits = tracker.fitMotions()
 let totalMs = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e6
 let sorted = ingestMs.sorted()
 let median = sorted.isEmpty ? 0 : (sorted[(sorted.count - 1) / 2] + sorted[sorted.count / 2]) / 2

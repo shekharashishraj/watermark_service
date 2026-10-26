@@ -136,6 +136,34 @@ extension ObjectTracker {
         matches().filter { cached($0) == nil }
     }
 
+    /// The ICP inputs of a pair: the left instance's points (source) and the arrived instance's (target); nil when
+    /// either instance is gone.
+    public func motionInputs(_ m: Match) -> (source: [SIMD3<Float>], target: [SIMD3<Float>])? {
+        guard let l = instance(m.leftID), let a = instance(m.arrivedID) else { return nil }
+        return (l.points, a.points)
+    }
+
+    /// The move from one point set to the other, as every caller of the layer measures it (spec §4.7).
+    public static func measureMotion(source: [SIMD3<Float>], target: [SIMD3<Float>]) -> Motion? {
+        PlanarICP.fit(source: source, target: target)
+    }
+
+    /// Measures every pair in `pairsNeedingMotion()` in turn and caches the result with `setMotion`, so Detect and the
+    /// Mac replay fit the same pairs the same way. `willFit` runs before each fit; `stop` is checked before each fit.
+    /// Returns the number of fits.
+    @discardableResult
+    public func fitMotions(willFit: (Match) -> Void = { _ in }, stop: () -> Bool = { false }) -> Int {
+        var fits = 0
+        for pair in pairsNeedingMotion() {
+            if stop() { break }
+            guard let (source, target) = motionInputs(pair) else { continue }
+            willFit(pair)
+            setMotion(leftID: pair.leftID, arrivedID: pair.arrivedID, Self.measureMotion(source: source, target: target))
+            fits += 1
+        }
+        return fits
+    }
+
     /// One event per confirmed instance or matched pair, ordered by when the instance named by `id` first appeared.
     public func events() -> [ObjectEvent] {
         let confirmed = instances.filter { $0.isConfirmed(config) }

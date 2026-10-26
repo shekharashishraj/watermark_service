@@ -246,4 +246,20 @@ final class ObjectEventsTests: XCTestCase {
         XCTAssertEqual(t.pairsNeedingMotion().count, 1)
         XCTAssertNil(t.events()[0].motion)
     }
+
+    func testFitMotionsMeasuresEachPairOnceWithTheSharedFit() throws {
+        let t = pairTracker()
+        t.setFeature(instance: 0, unit(2), source: .render)
+        t.setFeature(instance: 1, unit(2), source: .live)
+        var seen: [Match] = []
+        XCTAssertEqual(t.fitMotions(stop: { true }), 0)
+        XCTAssertEqual(t.fitMotions(willFit: { seen.append($0) }), 1)
+        XCTAssertEqual(seen.map(\.leftID), [0]); XCTAssertEqual(seen.map(\.arrivedID), [1])
+        XCTAssertTrue(t.pairsNeedingMotion().isEmpty)
+        XCTAssertEqual(t.fitMotions(), 0)
+        // The cached move is exactly what the shared fit gives on the pair's points.
+        let (source, target) = try XCTUnwrap(t.motionInputs(seen[0]))
+        let expected = ObjectTracker.measureMotion(source: source, target: target)
+        XCTAssertEqual(t.events()[0].motion?.translation, expected?.translation)
+    }
 }

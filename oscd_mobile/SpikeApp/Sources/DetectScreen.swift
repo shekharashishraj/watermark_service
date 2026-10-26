@@ -221,6 +221,10 @@ struct ResultsView: View {
                 row("Total time", String(format: "%.0f s", s.totalSeconds))
             }
 
+            if let objects = result.objects, !objects.events.isEmpty {
+                ObjectsSection(report: objects, before: result.before)
+            }
+
             let setup = s.timings.stages.filter { MethodA.Stage.setup.contains($0) }
             if !setup.isEmpty {
                 Section("Setup (once)") {
@@ -258,3 +262,47 @@ struct ResultsView: View {
         .font(.system(size: 13))
     }
 }
+
+/// The object events of a finished run, with a link to see them over the before-scan's 3D model.
+struct ObjectsSection: View {
+    let report: ObjectReport
+    let before: ScanInfo?
+
+    var body: some View {
+        Section {
+            ObjectEventList(report: report, compact: false, highlighted: .constant(nil))
+            if let before {
+                NavigationLink("Show in 3D") { ModelViewerScreen(scan: before, report: report) }
+            }
+        } header: {
+            Text("Objects")
+        } footer: {
+            Text("Positions are in the before-scan's frame. Dashed: probably the same object. Hints are not counted.")
+        }
+    }
+}
+
+#if DEBUG
+extension ObjectReport {
+    /// One moved, one added, one removed and one altered event, around the origin on a table at y = 0.
+    static var previewSample: ObjectReport {
+        func place(_ x: Float, _ z: Float) -> Placement {
+            let c = SIMD3<Float>(x, 0.03, z)
+            return Placement(centroid: c, bbox: AABB(min: c - SIMD3(0.03, 0.03, 0.03), max: c + SIMD3(0.03, 0.03, 0.03)),
+                             voxels: 120, frames: [0, 1, 2])
+        }
+        return ObjectReport(beforeID: "before", afterID: "after", method: "A", voxelSizeM: 0.01, events: [
+            ObjectEvent(id: 1, kind: .moved, confidence: 0.8, hint: false, label: "Ball", labelConfidence: 0.9,
+                        before: place(-0.12, 0.05), after: place(0.1, -0.03),
+                        motion: Motion(translation: SIMD3(0.22, 0, -0.08), horizontalDistance: 0.23, yawDeg: nil, fitRMS: 0.004, inlierFraction: 0.9)),
+            ObjectEvent(id: 2, kind: .added, confidence: 0.7, hint: false, label: "Cup", labelConfidence: 0.5, after: place(0.05, 0.12)),
+            ObjectEvent(id: 3, kind: .removed, confidence: 0.7, hint: false, before: place(-0.1, -0.1)),
+            ObjectEvent(id: 4, kind: .altered, confidence: 0.4, hint: true, label: "Book", labelConfidence: 0.8, after: place(0.14, 0.1)),
+        ])
+    }
+}
+
+#Preview("Objects section") {
+    List { ObjectsSection(report: .previewSample, before: nil) }
+}
+#endif

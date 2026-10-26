@@ -34,7 +34,16 @@ final class ModelViewer: ObservableObject {
         var label: String
     }
 
+    /// The camera that drew `image`, kept with it so overlays are projected with the pose the picture was
+    /// rendered from (the picture trails the request by a frame while dragging).
+    struct Shown {
+        var pose: Pose
+        var intrinsics: Intrinsics
+        var orientation: ObjectProjection.Orientation
+    }
+
     @Published private(set) var image: UIImage?
+    @Published private(set) var shown: Shown?
     @Published private(set) var status = "Opening the 3D model…"
     @Published private(set) var renderMs = 0.0
     @Published private(set) var mode = Mode.walk
@@ -169,7 +178,8 @@ final class ModelViewer: ObservableObject {
                 let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
                 let image = r.portrait ? PreviewController.image(rgba, K.width, K.height)
                                        : PreviewController.cgImage(rgba, K.width, K.height).map { UIImage(cgImage: $0) }
-                DispatchQueue.main.async { self.image = image; self.renderMs = ms }
+                let shown = Shown(pose: r.pose, intrinsics: K, orientation: r.portrait ? .sensorRight : .none)
+                DispatchQueue.main.async { self.image = image; self.shown = shown; self.renderMs = ms }
             } }
         } catch {
             DispatchQueue.main.async { self.status = "Could not render: \(error.localizedDescription)" }
@@ -179,19 +189,24 @@ final class ModelViewer: ObservableObject {
 
 /// Walk: slider / ◀ ▶ move along the captured path, drag looks around, double-tap looks straight again.
 /// Orbit: drag to orbit, pinch to zoom, double-tap to go back to the starting view.
+///
+/// With a `report`, the object events are drawn over the model (arrows, boxes, dotted circles) and re-projected with
+/// every camera change; the list under the view highlights an event when tapped.
 struct ModelViewerScreen: View {
     let scan: ScanInfo
+    var report: ObjectReport? = nil
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewer = ModelViewer()
     @State private var lastDrag = CGSize.zero
     @State private var lastScale: CGFloat = 1
     @State private var slider = 0.0
+    @State private var highlighted: Int?
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let image = viewer.image {
-                Image(uiImage: image).resizable().scaledToFit()
+                ViewerFrame(image: image, shown: viewer.shown, report: report, highlighted: highlighted)
             }
             VStack {
                 HStack {
@@ -221,6 +236,16 @@ struct ModelViewerScreen: View {
                     .padding(.horizontal, 20)
                     Text("Frame \(w.index + 1) of \(viewer.keyframeCount) · drag to look around")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
+                }
+                if let report, !report.events.isEmpty {
+                    ScrollView {
+                        ObjectEventList(report: report, compact: true, highlighted: $highlighted).padding(8)
+                    }
+                    .frame(maxHeight: 96)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .environment(\.colorScheme, .dark)         // the viewer is black; the list reads white on it
+                    .padding(.horizontal, 16).padding(.top, 6)
                 }
                 Picker("Mode", selection: Binding(get: { viewer.mode }, set: { viewer.setMode($0) })) {
                     ForEach(ModelViewer.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -270,6 +295,7 @@ struct ModelViewerScreen: View {
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             viewer.open(scan: scan)
+            if let report { AppLog.write("viewer: objects \(report.events.count) events") }
             slider = Double(viewer.walk?.index ?? 0)
             // `-viewSpin N`: orbit 2° per view for N views; `-viewWalkSpin N`: step N keyframes (checks without touch).
             let d = UserDefaults.standard
@@ -293,3 +319,35 @@ struct ModelViewerScreen: View {
         .onDisappear { viewer.close() }
     }
 }
+
+/// The rendered model with the object overlay on top. The overlay is laid over the aspect-fitted picture itself, so it
+/// shares its frame exactly.
+struct ViewerFrame: View {
+    let image: UIImage
+    let shown: ModelViewer.Shown?
+    let report: ObjectReport?
+    var highlighted: Int?
+
+    var body: some View {
+        Image(uiImage: image).resizable().scaledToFit()
+            .overlay {
+                if let report, let shown {
+                    ObjectOverlay(report: report, pose: shown.pose, intrinsics: shown.intrinsics,
+                                  orientation: shown.orientation, highlighted: highlighted)
+                }
+            }
+    }
+}
+
+#if DEBUG
+#Preview("Viewer overlay") {
+    let K = ModelViewer.orbitIntrinsics
+    let pose = OrbitCamera(target: .zero, yaw: 0.4, pitch: 0.7, distance: 0.8).pose
+    let backdrop = UIGraphicsImageRenderer(size: CGSize(width: K.width, height: K.height)).image { ctx in
+        UIColor.darkGray.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: K.width, height: K.height))
+    }
+    ViewerFrame(image: backdrop, shown: .init(pose: pose, intrinsics: K, orientation: .none),
+                report: .previewSample, highlighted: 1)
+        .background(Color.black)
+}
+#endif

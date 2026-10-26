@@ -53,6 +53,7 @@ struct RootView: View {
         : UserDefaults.standard.string(forKey: "tab") == "capture" ? .capture : .scans     // `-tab capture` for checks
     @State private var showBuild = false
     @State private var viewScan: ScanInfo?
+    @State private var viewReport: ObjectReport?
     @State private var showLive = false
 
     var body: some View {
@@ -83,6 +84,9 @@ struct RootView: View {
             if let id = UserDefaults.standard.string(forKey: "viewModel") {
                 viewScan = library.scans.first { $0.id == id && $0.hasReference }
             }
+            // `-viewObjects <after-scan folder>` opens the 3D viewer on the before-scan of that scan's latest saved
+            // detection, with that run's object events drawn over the model.
+            if let id = UserDefaults.standard.string(forKey: "viewObjects") { openObjects(afterID: id) }
             if let id = UserDefaults.standard.string(forKey: "buildReference"), !builder.running,
                let scan = library.scans.first(where: { $0.id == id }) {
                 builder.start(scan: scan)
@@ -92,8 +96,19 @@ struct RootView: View {
         .fullScreenCover(isPresented: $showBuild, onDismiss: { library.refresh() }) {
             BuildSheet(builder: builder) { showBuild = false }
         }
-        .fullScreenCover(item: $viewScan) { scan in ModelViewerScreen(scan: scan) }
+        .fullScreenCover(item: $viewScan) { scan in ModelViewerScreen(scan: scan, report: viewReport) }
         .fullScreenCover(isPresented: $showLive) { PreviewView(controller: preview, autoStart: true) }
         .onChange(of: tab) { _, t in AppLog.write("app: tab \(t)") }
+    }
+
+    private func openObjects(afterID: String) {
+        guard let after = library.scans.first(where: { $0.id == afterID }),
+              let latest = ((try? DetectionSummary.all(in: after.url)) ?? []).max(by: { $0.finishedAt < $1.finishedAt }),
+              let before = library.scans.first(where: { $0.id == latest.beforeID && $0.hasReference }) else {
+            AppLog.write("viewer: no saved detection with a before-scan model for \(afterID)")
+            return
+        }
+        viewReport = ["B", "A"].lazy.compactMap { ObjectReport.load(in: after.url, beforeID: latest.beforeID, method: $0) }.first
+        viewScan = before
     }
 }

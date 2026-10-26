@@ -4,7 +4,7 @@ import OSCDCore
 import SplatXTrainC
 
 /// Builds a scan's 3D model on the phone (spec §7): ColmapExport, then splatx training with the settings of
-/// the Mac model the spike validated (3,000 iterations, ≤ 200k initial points, SH 3, 0.8·L1 + 0.2·D-SSIM),
+/// the Mac model the spike validated (SH 3, 0.8·L1 + 0.2·D-SSIM; steps and Gaussian cap from `Quality`),
 /// kernels compiled on the phone. The result replaces the scan's reference.ply; an existing model is kept
 /// as reference.previous.ply. splatx allows one training run at a time, on one thread.
 final class ReferenceBuilder: ObservableObject {
@@ -17,7 +17,27 @@ final class ReferenceBuilder: ObservableObject {
         case failed(String)
     }
 
-    static let iterations: Int32 = 3000
+    /// Steps and starting Gaussians. On the 2026-10-25 room scan (105 frames, Mac M4 ≈ phone speed): Quick 24.0 dB
+    /// held-out in 23 s, Standard 25.0 dB in 2 min, High 25.4 dB in 4 min; more steps or Gaussians beyond that gave
+    /// nothing. Standard is the default; Quick is for a change-detection reference in a hurry.
+    enum Quality: String, CaseIterable, Identifiable {
+        case quick, standard, high
+        var id: String { rawValue }
+        var iterations: Int32 { switch self { case .quick: 2000; case .standard: 8000; case .high: 16000 } }
+        var maxPoints: Int64 { switch self { case .quick: 200_000; case .standard: 400_000; case .high: 600_000 } }
+        var label: String {
+            switch self {
+            case .quick: "Quick (2,000 steps, about 30 s)"
+            case .standard: "Standard (8,000 steps, about 2 min)"
+            case .high: "High (16,000 steps, 600k Gaussians, 5 min or more)"
+            }
+        }
+        static let defaultsKey = "trainQuality"
+        static var current: Quality {
+            Quality(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .standard
+        }
+    }
+    static var iterations: Int32 { Quality.current.iterations }
 
     @Published private(set) var stage = Stage.idle
     @Published private(set) var scanLabel = ""
@@ -64,7 +84,9 @@ final class ReferenceBuilder: ObservableObject {
                 throw PreviewError.message("The app is missing the splatx kernel sources; rebuild it.")
             }
 
-            publish(.training(iter: 0, total: Int(Self.iterations), splats: export.points, secondsLeft: .nan, thermal: 0))
+            let quality = Quality.current
+            log("\(scan.id): training \(quality.rawValue): \(quality.iterations) steps, up to \(quality.maxPoints) Gaussians")
+            publish(.training(iter: 0, total: Int(quality.iterations), splats: export.points, secondsLeft: .nan, thermal: 0))
             startThermalFeed()
             defer { stopThermalFeed() }
             let out = work.appendingPathComponent("reference.ply")
@@ -77,8 +99,8 @@ final class ReferenceBuilder: ObservableObject {
                             var a = SxTrainArgs()
                             a.data_dir = data
                             a.factor = 1
-                            a.iters = Self.iterations
-                            a.max_points = 200_000
+                            a.iters = quality.iterations
+                            a.max_points = quality.maxPoints
                             a.sh_degree = 3
                             a.out_path = outPath
                             a.eval_image = 0

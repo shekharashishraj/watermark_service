@@ -9,6 +9,7 @@ struct OSCDSpikeApp: App {
     @StateObject private var preview = PreviewController()
     @StateObject private var runner = DetectionRunner()
     @StateObject private var builder = ReferenceBuilder()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -17,7 +18,23 @@ struct OSCDSpikeApp: App {
                 .environmentObject(builder)
                 .preferredColorScheme(.light)        // the Romulus look is light-only
         }
+        .onChange(of: scenePhase) { _, phase in
+            // A run that ends while active (crash, memory kill, watchdog) leaves the marker set; a run that
+            // was backgrounded first (swiped away, or evicted later) clears it. Read at the next launch.
+            let d = UserDefaults.standard
+            switch phase {
+            case .active:
+                if d.bool(forKey: Self.activeMarker) { AppLog.write("app: the previous run ended while active (crash, memory kill or watchdog)", sync: true) }
+                d.set(true, forKey: Self.activeMarker)
+            case .background:
+                d.set(false, forKey: Self.activeMarker)
+                AppLog.write("app: background", sync: true)
+            default: break
+            }
+        }
     }
+
+    static let activeMarker = "runEndedWhileActive"
 }
 
 /// Scans / Capture / Detect / Settings, as in Romulus.

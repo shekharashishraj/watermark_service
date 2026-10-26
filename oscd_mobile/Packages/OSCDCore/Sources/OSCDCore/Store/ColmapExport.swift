@@ -17,11 +17,14 @@ public enum ColmapExport {
         public let points: Int
     }
 
-    /// Writes `dir/images/<id>.png` and `dir/sparse/0/{cameras,images,points3D}.txt`.
+    /// Writes `dir/images/<id>.png` and `dir/sparse/0/{cameras,images,points3D}.txt`. With `fullResolution`
+    /// and a scan that has full-size images, the images are those JPEGs (`<id>.jpg`) and the camera is scaled
+    /// to the capture size; the LiDAR points are the same either way.
     @discardableResult
-    public static func write(session: SessionStore, to dir: URL, voxel: Double = 0.004) throws -> Result {
+    public static func write(session: SessionStore, to dir: URL, voxel: Double = 0.004, fullResolution: Bool = false) throws -> Result {
         let m = session.manifest
         let K = m.intrinsics
+        let full = fullResolution && session.hasFullImages
         let fm = FileManager.default
         let images = dir.appendingPathComponent("images"), sparse = dir.appendingPathComponent("sparse/0")
         try fm.createDirectory(at: images, withIntermediateDirectories: true)
@@ -31,8 +34,13 @@ public enum ColmapExport {
         for (n, kf) in m.keyframes.enumerated() {
             let rgb = try session.array(.keyframes, id: kf.id, name: "rgb").uint8()
             let (depth, conf) = try session.depth(.keyframes, id: kf.id)
-            let name = String(format: "%06d.png", kf.id)
-            try writePNG(rgb: rgb, width: K.width, height: K.height, to: images.appendingPathComponent(name))
+            let name = String(format: full ? "%06d.jpg" : "%06d.png", kf.id)
+            if full {
+                try? fm.removeItem(at: images.appendingPathComponent(name))
+                try fm.copyItem(at: session.fullImageURL(.keyframes, id: kf.id), to: images.appendingPathComponent(name))
+            } else {
+                try writePNG(rgb: rgb, width: K.width, height: K.height, to: images.appendingPathComponent(name))
+            }
             let (R, t) = worldToCamera(arkitCameraToWorld: kf.arkitCameraToWorld)
             let q = qvec(R)
             imageLines += "\(n + 1) \(q.x) \(q.y) \(q.z) \(q.w) \(t.x) \(t.y) \(t.z) 1 \(name)\n\n"
@@ -41,7 +49,10 @@ public enum ColmapExport {
         }
         if let roi = m.roi { points = cropAndDedupe(points, roi: roi, voxel: voxel) } else { points = dedupe(points, voxel: voxel) }
 
-        try "1 PINHOLE \(K.width) \(K.height) \(K.f) \(K.f) \(K.cx) \(K.cy)\n"
+        // Pixel centres scale as (c + 0.5)·s − 0.5.
+        let s = full ? Float(m.captureWidth) / Float(K.width) : 1
+        let (cw, ch) = full ? (m.captureWidth, m.captureHeight) : (K.width, K.height)
+        try "1 PINHOLE \(cw) \(ch) \(K.f * s) \(K.f * s) \((K.cx + 0.5) * s - 0.5) \((K.cy + 0.5) * s - 0.5)\n"
             .write(to: sparse.appendingPathComponent("cameras.txt"), atomically: true, encoding: .utf8)
         try imageLines.write(to: sparse.appendingPathComponent("images.txt"), atomically: true, encoding: .utf8)
         var pointLines = ""
@@ -134,15 +145,24 @@ public enum ColmapExport {
     }
 
     static func writePNG(rgb: [UInt8], width: Int, height: Int, to url: URL) throws {
+        try writeImage(rgb: rgb, width: width, height: height, to: url, type: "public.png", properties: nil)
+    }
+
+    public static func writeJPEG(rgb: [UInt8], width: Int, height: Int, to url: URL, quality: Double = 0.92) throws {
+        try writeImage(rgb: rgb, width: width, height: height, to: url, type: "public.jpeg",
+                       properties: [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+    }
+
+    static func writeImage(rgb: [UInt8], width: Int, height: Int, to url: URL, type: String, properties: CFDictionary?) throws {
         let data = Data(rgb) as CFData
         guard let provider = CGDataProvider(data: data),
               let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 24, bytesPerRow: width * 3,
                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
                                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
-              let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+              let dest = CGImageDestinationCreateWithURL(url as CFURL, type as CFString, 1, nil) else {
             throw SessionStore.StoreError.missingFile("could not encode \(url.lastPathComponent)")
         }
-        CGImageDestinationAddImage(dest, image, nil)
+        CGImageDestinationAddImage(dest, image, properties)
         guard CGImageDestinationFinalize(dest) else { throw SessionStore.StoreError.missingFile("could not write \(url.lastPathComponent)") }
     }
 }

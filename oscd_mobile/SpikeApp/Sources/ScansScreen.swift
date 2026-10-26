@@ -51,7 +51,7 @@ struct ScansScreen: View {
             Spacer()
             Image(systemName: "square.stack.3d.up").font(.system(size: 44)).foregroundColor(VeriColor.nickel)
             Text("No scans yet").font(.system(size: 17, weight: .semibold)).foregroundColor(VeriColor.textPrimary)
-            Text("Open Capture, tap the table to place the scan region, then record a slow sweep.")
+            Text("Open Capture, press Record and move slowly over the scene, then Stop.")
                 .font(.system(size: 13)).foregroundColor(VeriColor.nickel)
                 .multilineTextAlignment(.center).padding(.horizontal, 40)
             Spacer()

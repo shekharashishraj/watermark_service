@@ -88,6 +88,17 @@ public final class SessionStore {
         try saveManifest()
     }
 
+    /// A keyframe's image at the full capture size (JPEG), for training the model at full resolution.
+    public func fullImageURL(_ kind: Kind, id: Int) -> URL {
+        root.appendingPathComponent(kind.rawValue).appendingPathComponent(String(format: "%06d_full.jpg", id))
+    }
+
+    /// True when every keyframe has its full-size image.
+    public var hasFullImages: Bool {
+        !manifest.keyframes.isEmpty
+            && manifest.keyframes.allSatisfy { FileManager.default.fileExists(atPath: fullImageURL(.keyframes, id: $0.id).path) }
+    }
+
     public func setROI(_ roi: AABB) throws {
         manifest.roi = roi
         try saveManifest()

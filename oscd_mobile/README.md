@@ -36,11 +36,11 @@ copy the weights the checkout already has into torch's cache:
 ## App ("3D Changes")
     cd SpikeApp && xcodegen generate && open OSCDSpike.xcodeproj
 - **Scans:** every recorded scan (`Documents/sessions/<date>/`), newest first, named Scan 1, 2, … by capture order. A scan's detail screen has:
-  - **Build 3D model on this phone** (about 40–60 s; the old model is kept as `reference.previous.ply`);
+  - **Build 3D model on this phone** (Settings → Model quality: Quick ≈ 30 s, Standard ≈ 2 min (default), High ≈ 4 min; the old model is kept as `reference.previous.ply`);
   - **View 3D model** (drag to orbit, pinch to zoom, double-tap to reset);
   - **Use as the before-scan**;
   - the scan's saved results.
-- **Capture:** tap the table, Record, sweep, Stop.
+- **Capture:** Record, move slowly over the scene (a tabletop or a room), Stop. Each keyframe is the sharpest frame of a 0.25 s window (up to 8 frames, PocketGS gradient energy, saved as `stats.sharpness`); nothing is saved while the phone moves faster than 0.6 m/s or turns faster than 30°/s (averaged over 0.25 s), and the screen says so after 1.5 s of it; the scanned area (`roi`) is worked out from the scan's LiDAR at Stop (`SceneRegion`).
 - **Detect:**
   - choose the before-scan (it needs a 3D model) and the after-scan, then Run;
   - Method A goes over every after-scan frame; "Also B" adds the LiDAR depth and colour cues over the same frames;
@@ -54,7 +54,7 @@ Capture and Live view share one ARView (`SharedARView.swift`). With a second ARV
 
     tools/build_reference.sh <scan folder>
 
-The script copies the scan off the phone, exports it, trains splatx (3,000 iterations), and copies `reference.ply` back into the scan's folder. It takes about 1 minute. Python runs from a venv in `~/Library/Caches`, because iCloud offloads `tools/.venv`.
+The script copies the scan off the phone, exports it, trains splatx (8,000 iterations, ≤ 400k Gaussians: the phone's Standard quality), and copies `reference.ply` back into the scan's folder. It takes about 2 minutes. Python runs from a venv in `~/Library/Caches`, because iCloud offloads `tools/.venv`.
 
 **Checks without tapping:** launch arguments (folder names under `Documents/sessions`):
 
@@ -67,6 +67,14 @@ The script copies the scan off the phone, exports it, trains splatx (3,000 itera
 | `-buildReference <scan>` | Build that scan's model on the phone |
 | `-viewModel <scan>` | Open the 3D viewer; `-viewYawDeg` / `-viewPitchDeg` turn the first view |
 | `-beforeScanID <scan>` | Set the before-scan |
+
+**Capture checks:** at Stop, `app-log.txt` gets one `capture stats:` line:
+- frame gap (median, max) and `didUpdate` time (median, p95, max): does keyframe selection slow the camera down?
+- sharpness and copy time: the cost of scoring frames and copying the window's sharpest one;
+- keyframe ÷ first-frame sharpness, and how many windows had a first frame under 70 % as sharp: what the window gains over keeping the first frame past the gate;
+- candidates per window: 1–2 means the window rarely had a choice.
+
+Each keyframe in `session.json` keeps `stats.sharpness`, `stats.firstSharpness` and `stats.candidates`, and the line `capture: scanned area …` gives the box's size.
 
 **On-phone logs** (pull with `xcrun devicectl device copy from ... --source Documents/<file>`):
 - `Documents/app-log.txt`: camera, screen and build events, including each session's first-frame brightness;

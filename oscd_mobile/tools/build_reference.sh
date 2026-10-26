@@ -6,7 +6,7 @@
 #   device id      default: $OSCD_DEVICE, else the only connected iPhone
 #
 # Steps: copy the scan off the phone → COLMAP export (tools/session_to_colmap.py) → splatx train
-# (3000 iterations, ≤ 200k Gaussians, as in docs/spike_report.md) → copy reference.ply into the scan.
+# (8000 iterations, ≤ 400k Gaussians: the phone's Standard quality) → copy reference.ply into the scan.
 set -eu
 
 SCAN=${1:?usage: tools/build_reference.sh <scan folder> [device id]}
@@ -40,8 +40,8 @@ xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContain
     --source "Documents/sessions/$SCAN" --destination "$WORK/session" >/dev/null
 echo "2/4 Exporting it for training…"
 "$PY" "$HERE/tools/session_to_colmap.py" "$WORK/session" "$WORK/colmap" > "$WORK/export.log" 2>&1 || { tail -20 "$WORK/export.log" >&2; exit 1; }
-echo "3/4 Training the 3D model (about a minute)…"
-"$SPLATX" train --data "$WORK/colmap" --factor 1 --iters 3000 --max-points 200000 --metallib "$METALLIB" \
+echo "3/4 Training the 3D model (about 2 minutes)…"
+"$SPLATX" train --data "$WORK/colmap" --factor 1 --iters 8000 --max-points 400000 --metallib "$METALLIB" \
     --out "$WORK/reference.ply" > "$WORK/train.log" 2>&1 || { tail -20 "$WORK/train.log" >&2; exit 1; }
 echo "4/4 Copying the model to the phone…"
 xcrun devicectl device copy to --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$APP" \

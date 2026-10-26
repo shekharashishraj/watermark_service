@@ -13,15 +13,33 @@ import simd
 //   oscd-harness colmap <session-dir> <out-dir>
 //     Writes the session as the COLMAP dataset the phone trains its reference from (ColmapExport),
 //     for comparison with tools/session_to_colmap.py.
+//   oscd-harness features <session-dir> <XFeat_480x352.mlpackage> <out-dir>
+//     Writes every keyframe's XFeat keypoints and descriptors as <id>_kpts.npy (N × 2, working-image
+//     pixels) and <id>_feats.npy (N × 64), for tools/refine_poses.py.
 let usage = """
 usage: oscd-harness anchors <session-dir> <XFeat_480x352.mlpackage> [depth1 depth2]
        oscd-harness pose <reference-session> <query-session> <XFeat_480x352.mlpackage> [depth1 depth2]
        oscd-harness colmap <session-dir> <out-dir>
+       oscd-harness features <session-dir> <XFeat_480x352.mlpackage> <out-dir>
 """
 let args = CommandLine.arguments
 if args.count == 4, args[1] == "colmap" {
     let r = try ColmapExport.write(session: try SessionStore(open: URL(fileURLWithPath: args[2])), to: URL(fileURLWithPath: args[3]))
     print("\(r.images) images, \(r.points) points → \(args[3])")
+    exit(0)
+}
+if args.count == 5, args[1] == "features" {
+    let store = try SessionStore(open: URL(fileURLWithPath: args[2]))
+    let xfeat = try XFeatModel(compiledModelURL: try XFeatModel.compile(URL(fileURLWithPath: args[3])))
+    let out = URL(fileURLWithPath: args[4])
+    try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    for r in store.manifest.keyframes {
+        let k = try xfeat.detect(try store.rgb(.keyframes, id: r.id))
+        let name = String(format: "%06d", r.id)
+        try NPYArray(floats: k.kpts.flatMap { [$0.x, $0.y] }, shape: [k.count, 2]).write(to: out.appendingPathComponent(name + "_kpts.npy"))
+        try NPYArray(floats: k.feats, shape: [k.count, DescribedKeypoints.dim]).write(to: out.appendingPathComponent(name + "_feats.npy"))
+    }
+    print("\(store.manifest.keyframes.count) keyframes → \(args[4])")
     exit(0)
 }
 guard args.count >= 4, ["anchors", "pose"].contains(args[1]) else { print(usage); exit(2) }

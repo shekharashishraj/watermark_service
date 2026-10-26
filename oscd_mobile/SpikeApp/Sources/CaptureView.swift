@@ -7,7 +7,7 @@ struct CaptureView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            SharedARViewSlot(onTap: { controller.placeROI(at: $0) }).id(appearToken).ignoresSafeArea()
+            SharedARViewSlot(onTap: nil).id(appearToken).ignoresSafeArea()
             VStack(spacing: 12) {
                 Text(controller.status)
                     .font(.callout)
@@ -17,6 +17,7 @@ struct CaptureView: View {
                 Button(controller.recording ? "Stop" : "Record") { controller.toggleRecording() }
                     .buttonStyle(.borderedProminent)
                     .tint(controller.recording ? .red : .accentColor)
+                    .disabled(controller.saving)
             }
             .padding(.bottom, 32)
         }

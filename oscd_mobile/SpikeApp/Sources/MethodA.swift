@@ -112,7 +112,7 @@ final class MethodA {
         lap(Stage.loadModels)
 
         let store = try SessionStore(open: beforeScan)
-        guard let roi = store.manifest.roi else { throw PreviewError.message("\(beforeLabel) has no table region.") }
+        guard let roi = try SceneRegion.region(of: store) else { throw PreviewError.message("\(beforeLabel) has no frames with depth.") }
         self.roi = roi
         var views: [(pose: Pose, keypoints: DescribedKeypoints)] = []
         for (i, r) in store.manifest.keyframes.enumerated() {

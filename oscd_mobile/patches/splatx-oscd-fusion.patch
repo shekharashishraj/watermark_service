@@ -1,8 +1,8 @@
 From 96d9215d7ebaffc00bcd0c712365ea69e63956d1 Mon Sep 17 00:00:00 2001
 From: oscd <oscd@local>
 Date: Wed, 14 Oct 2026 10:17:06 -0700
-Subject: [PATCH] oscd_mobile: O-SCD change fusion (custom-loss backward, torch
- Adam, ADC)
+Subject: [PATCH 1/2] oscd_mobile: O-SCD change fusion (custom-loss backward,
+ torch Adam, ADC)
 
 ---
  Sources/SplatXCore/OscdFusion.cpp             | 352 ++++++++++++++++++
@@ -869,6 +869,189 @@ index 0000000..2973ea1
 +#ifdef __cplusplus
 +}
 +#endif
+-- 
+2.54.0 (Apple Git-157)
+
+
+From 3aca114b6647ffa2cbe79f2a019e3479a0e87bbf Mon Sep 17 00:00:00 2001
+From: Ashish Raj Shekhar <ashekha9@asu.edu>
+Date: Sun, 25 Oct 2026 14:52:30 -0700
+Subject: [PATCH 2/2] oscd_mobile: optional per-point normals seed
+ surface-aligned discs (PocketGS I)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+sparse/0/normals.txt (one unit normal per points3D line) makes init_splats start each
+Gaussian as a disc tangent to the surface: local z = normal, normal scale = 0.1 × the
+tangential 3-NN scale. Absent file or zero normal → the isotropic start as before.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ Sources/SplatXCore/ColmapLoader.cpp           | 18 ++++++++++++
+ Sources/SplatXCore/Trainer.cpp                | 28 +++++++++++++++++++
+ Sources/SplatXCore/TrainingInput.cpp          |  1 +
+ .../SplatXCore/include/splatx/ColmapLoader.h  |  3 ++
+ Sources/SplatXCore/include/splatx/Trainer.h   |  6 ++++
+ .../SplatXCore/include/splatx/TrainingInput.h |  1 +
+ 6 files changed, 57 insertions(+)
+
+diff --git a/Sources/SplatXCore/ColmapLoader.cpp b/Sources/SplatXCore/ColmapLoader.cpp
+index 99f9f06..a722faa 100644
+--- a/Sources/SplatXCore/ColmapLoader.cpp
++++ b/Sources/SplatXCore/ColmapLoader.cpp
+@@ -250,11 +250,28 @@ void load_points3d_txt(const std::string& path, ColmapBundle& b) {
+     }
+ }
+ 
++// normals.txt (optional): "NX NY NZ" per line, one line per points3D entry in the same order. A
++// zero vector means "no normal for this point" (init_splats falls back to an isotropic Gaussian).
++void load_normals_txt(const std::string& path, ColmapBundle& b) {
++    TextReader r(path);
++    std::string line;
++    b.normals.reserve(b.points.size() * 3);
++    while (r.data_line(line)) {
++        const auto t = split_ws(line);
++        if (t.size() != 3) r.fail("expected NX NY NZ, got " + std::to_string(t.size()) + " token(s)");
++        for (int k = 0; k < 3; k++) b.normals.push_back(static_cast<float>(parse_double(r, t[k], "N")));
++    }
++    if (b.normals.size() != b.points.size() * 3)
++        r.fail("normals.txt has " + std::to_string(b.normals.size() / 3) + " lines, points3D has " +
++               std::to_string(b.points.size()));
++}
++
+ ColmapBundle load_colmap_bundle_txt(const std::string& dir) {
+     ColmapBundle b;
+     load_cameras_txt(dir + "/cameras.txt", b);
+     load_images_txt(dir + "/images.txt", b);
+     load_points3d_txt(dir + "/points3D.txt", b);
++    if (std::ifstream(dir + "/normals.txt").good()) load_normals_txt(dir + "/normals.txt", b);
+     return b;
+ }
+ 
+@@ -308,6 +325,7 @@ ColmapBundle load_colmap_bundle_bin(const std::string& dir) {
+             b.points.push_back(p);
+         }
+     }
++    if (std::ifstream(dir + "/normals.txt").good()) load_normals_txt(dir + "/normals.txt", b);
+     return b;
+ }
+ 
+diff --git a/Sources/SplatXCore/Trainer.cpp b/Sources/SplatXCore/Trainer.cpp
+index 411281d..7e62a9d 100644
+--- a/Sources/SplatXCore/Trainer.cpp
++++ b/Sources/SplatXCore/Trainer.cpp
+@@ -12,6 +12,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <cstdint>
++#include <cstdio>
+ #include <cstring>
+ #include <limits>
+ #include <locale>
+@@ -274,6 +275,11 @@ SplatCloud init_splats(const TrainingInput& input, const InitOptions& opts) {
+         throw std::invalid_argument("init_splats: seed_points must be non-empty [M,3]");
+     if (input.seed_rgb.size() != input.seed_points.size())
+         throw std::invalid_argument("init_splats: seed_rgb size != seed_points size");
++    const bool have_normals = !input.seed_normals.empty();
++    if (have_normals && input.seed_normals.size() != input.seed_points.size())
++        throw std::invalid_argument("init_splats: seed_normals size != seed_points size");
++    if (!(opts.normal_scale_ratio > 0.0f))
++        throw std::invalid_argument("init_splats: normal_scale_ratio must be > 0");
+     if (opts.max_points < 1)
+         throw std::invalid_argument("init_splats: max_points must be >= 1");
+     if (!(opts.init_opacity > 0.0f && opts.init_opacity < 1.0f))
+@@ -317,13 +323,35 @@ SplatCloud init_splats(const TrainingInput& input, const InitOptions& opts) {
+     // grid (knn3_mean_dists — an exact algorithm, bit-identical to brute-force. Phase 6 round 2
+     // Task 1).
+     const std::vector<float> knn_means = knn3_mean_dists(c.means.data(), N);
++    int64_t discs = 0;
+     for (int64_t i = 0; i < N; i++) {
+         const float mean_dist = std::max(knn_means[i], 1e-6f);
+         const float log_s = std::log(mean_dist * opts.init_scale);
+         c.scales[i * 3 + 0] = log_s;
+         c.scales[i * 3 + 1] = log_s;
+         c.scales[i * 3 + 2] = log_s;
++        if (!have_normals) continue;
++        const int64_t src = i * M / N;
++        float nx = input.seed_normals[src * 3], ny = input.seed_normals[src * 3 + 1], nz = input.seed_normals[src * 3 + 2];
++        const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
++        if (!(len > 1e-6f) || !std::isfinite(len)) continue;
++        nx /= len; ny /= len; nz /= len;
++        // The shortest rotation taking local +z onto n: q = (1 + n_z, −n_y, n_x, 0) (w-first), so the
++        // rotation matrix's third column (the axis scales[2] belongs to — KernelCommon.h
++        // quat_to_rotmat) is n. At n = −z that is degenerate; any half-turn about an in-plane axis does.
++        if (nz < -0.9999f) {
++            c.quats[i * 4 + 0] = 0.0f; c.quats[i * 4 + 1] = 1.0f; c.quats[i * 4 + 2] = 0.0f; c.quats[i * 4 + 3] = 0.0f;
++        } else {
++            const float w = 1.0f + nz, inv = 1.0f / std::sqrt(w * w + ny * ny + nx * nx);
++            c.quats[i * 4 + 0] = w * inv;
++            c.quats[i * 4 + 1] = -ny * inv;
++            c.quats[i * 4 + 2] = nx * inv;
++            c.quats[i * 4 + 3] = 0.0f;
++        }
++        c.scales[i * 3 + 2] = std::log(mean_dist * opts.init_scale * opts.normal_scale_ratio);
++        discs++;
+     }
++    if (have_normals) std::printf("init_splats: %lld of %lld Gaussians seeded as surface discs\n", (long long)discs, (long long)N);
+     return c;
+ }
+ 
+diff --git a/Sources/SplatXCore/TrainingInput.cpp b/Sources/SplatXCore/TrainingInput.cpp
+index 0e160a5..a10cb57 100644
+--- a/Sources/SplatXCore/TrainingInput.cpp
++++ b/Sources/SplatXCore/TrainingInput.cpp
+@@ -43,6 +43,7 @@ TrainingInput training_input_from_colmap(const ColmapBundle& b, const std::strin
+         for (int k = 0; k < 3; k++) ti.seed_points.push_back(static_cast<float>(p.xyz[k]));
+         for (int k = 0; k < 3; k++) ti.seed_rgb.push_back(p.rgb[k]);
+     }
++    ti.seed_normals = b.normals;
+     return ti;
+ }
+ 
+diff --git a/Sources/SplatXCore/include/splatx/ColmapLoader.h b/Sources/SplatXCore/include/splatx/ColmapLoader.h
+index b2be700..ec5cc5d 100644
+--- a/Sources/SplatXCore/include/splatx/ColmapLoader.h
++++ b/Sources/SplatXCore/include/splatx/ColmapLoader.h
+@@ -12,6 +12,9 @@ struct ColmapBundle {
+     std::vector<ColmapCamera> cameras;
+     std::vector<ColmapImage> images;
+     std::vector<ColmapPoint3D> points;
++    // Optional per-point unit normals [M,3] (sparse/0/normals.txt, one "nx ny nz" line per point in
++    // points3D order; absent → empty). O-SCD: seeds surface-aligned discs (PocketGS §I).
++    std::vector<float> normals;
+ };
+ // bin/txt auto-detection: if cameras.bin exists, use bin (preferred); if it is absent and
+ // cameras.txt exists, use txt (the iOS capture app bundle — txt writer).
+diff --git a/Sources/SplatXCore/include/splatx/Trainer.h b/Sources/SplatXCore/include/splatx/Trainer.h
+index fa39673..eea093f 100644
+--- a/Sources/SplatXCore/include/splatx/Trainer.h
++++ b/Sources/SplatXCore/include/splatx/Trainer.h
+@@ -45,6 +45,12 @@ struct InitOptions {
+     float init_opacity = 0.1f; // gsplat simple_trainer.py:167 init_opa
+     float init_scale = 1.0f;   // gsplat simple_trainer.py:169 init_scale — 3-NN distance multiplier
+     int sh_degree = 3;
++    // O-SCD (PocketGS "disc-like covariance seeding"): when TrainingInput.seed_normals is present, a
++    // point with a non-zero normal starts as a disc tangent to the surface — the local z axis is the
++    // normal, the tangential scales are the 3-NN distance × init_scale, and the normal scale is that
++    // × normal_scale_ratio. Points with a zero normal (and all points when no normals are given) keep
++    // the isotropic start above.
++    float normal_scale_ratio = 0.1f;
+ };
+ 
+ SplatCloud init_splats(const TrainingInput& input, const InitOptions& opts);
+diff --git a/Sources/SplatXCore/include/splatx/TrainingInput.h b/Sources/SplatXCore/include/splatx/TrainingInput.h
+index 6529fec..2093edd 100644
+--- a/Sources/SplatXCore/include/splatx/TrainingInput.h
++++ b/Sources/SplatXCore/include/splatx/TrainingInput.h
+@@ -22,6 +22,7 @@ struct TrainingInput {
+     std::vector<TrainingCamera> cameras;
+     std::vector<float> seed_points; // [M,3] (COLMAP points3D or LiDAR seed)
+     std::vector<uint8_t> seed_rgb;  // [M,3]
++    std::vector<float> seed_normals; // [M,3] unit normals, or empty (O-SCD surface-aligned init)
+ };
+ 
+ TrainingInput training_input_from_colmap(const ColmapBundle& bundle, const std::string& images_dir);
 -- 
 2.54.0 (Apple Git-157)
 

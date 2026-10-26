@@ -4,6 +4,7 @@ struct SettingsScreen: View {
     @EnvironmentObject private var library: ScanLibrary
     @ObservedObject var bench: BenchmarkRunner
     @ObservedObject var preview: PreviewController
+    @AppStorage(ReferenceBuilder.Quality.defaultsKey) private var quality = ReferenceBuilder.Quality.standard.rawValue
 
     var body: some View {
         NavigationStack {
@@ -19,14 +20,15 @@ struct SettingsScreen: View {
                         }
                     }
                     Section {
+                        Picker("Model quality", selection: $quality) {
+                            ForEach(ReferenceBuilder.Quality.allCases) { q in Text(q.label).tag(q.rawValue) }
+                        }
+                        .pickerStyle(.inline).labelsHidden()
                         Text("""
-                        1. Record the before-scan in Capture.
-                        2. On the Mac, with the phone connected:
-                           tools/build_reference.sh <scan folder>
-                           It copies the scan off the phone, trains its 3D model (about 1 minute) and copies the model back.
-                        3. The scan then shows "3D model ready" and can be picked as the before-scan in Detect.
+                        Used by "Build 3D model on this phone". Standard is about 1 dB sharper than Quick; High is for a scan you want to look at. \
+                        Capture matters as much: move slowly, and turn slowly. Nothing is saved while the phone turns faster than 30°/s.
                         """)
-                        .font(.system(size: 12)).foregroundColor(VeriColor.nickel).textSelection(.enabled)
+                        .font(.system(size: 12)).foregroundColor(VeriColor.nickel)
                     } header: { Text("Building a scan's 3D model") }
                     Section("About") {
                         row("Before-scan", library.before?.label ?? "none yet")

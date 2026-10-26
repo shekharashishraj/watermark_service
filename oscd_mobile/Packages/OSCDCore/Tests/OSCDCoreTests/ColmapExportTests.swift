@@ -74,4 +74,32 @@ final class ColmapExportTests: XCTestCase {
             .split(separator: "\n").count, r.points)
         XCTAssertTrue(FileManager.default.fileExists(atPath: out.appendingPathComponent("images/000001.png").path))
     }
+
+    /// Full resolution: the keyframe's JPEG is the training image and the camera is scaled to the capture size;
+    /// without full-size images the export falls back to the working-size PNGs.
+    func testFullResolutionExportUsesTheJPEGsAndScalesTheCamera() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("full-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: dir) }
+        let m = SessionManifest(deviceModel: "test", captureWidth: 128, captureHeight: 96, depthWidth: 8, depthHeight: 6,
+                                intrinsics: Intrinsics(f: 40, cx: 15.5, cy: 11.5, width: 32, height: 24))
+        let store = try SessionStore(create: dir.appendingPathComponent("scan"), manifest: m)
+        try store.append(.keyframes, record: FrameRecord(id: 0, timestamp: 0, arkitCameraToWorld: arkitPose(yaw: 0, centre: .zero)),
+                         rgb: [UInt8](repeating: 100, count: 32 * 24 * 3), depth: [Float](repeating: 1, count: 48),
+                         confidence: [UInt8](repeating: 2, count: 48))
+        XCTAssertFalse(store.hasFullImages)
+        try ColmapExport.write(session: store, to: dir.appendingPathComponent("small"), fullResolution: true)
+        XCTAssertTrue(fm.fileExists(atPath: dir.appendingPathComponent("small/images/000000.png").path))
+
+        try ColmapExport.writeJPEG(rgb: [UInt8](repeating: 100, count: 128 * 96 * 3), width: 128, height: 96,
+                                   to: store.fullImageURL(.keyframes, id: 0))
+        XCTAssertTrue(store.hasFullImages)
+        let out = dir.appendingPathComponent("full")
+        try ColmapExport.write(session: store, to: out, fullResolution: true)
+        XCTAssertTrue(fm.fileExists(atPath: out.appendingPathComponent("images/000000.jpg").path))
+        let cameras = try String(contentsOf: out.appendingPathComponent("sparse/0/cameras.txt"), encoding: .utf8)
+        XCTAssertEqual(cameras, "1 PINHOLE 128 96 160.0 160.0 63.5 47.5\n")
+        let images = try String(contentsOf: out.appendingPathComponent("sparse/0/images.txt"), encoding: .utf8)
+        XCTAssertTrue(images.contains(" 1 000000.jpg"))
+    }
 }

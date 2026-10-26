@@ -15,7 +15,7 @@ struct BuildSheet: View {
                 Section {
                     Text(builder.scanLabel).font(.system(size: 16, weight: .semibold))
                     row("Prepare the scan (images, LiDAR points)", state: state(0))
-                    row("Train the 3D model (3,000 steps, on this phone)", state: state(1))
+                    row("Train the 3D model (\(ReferenceBuilder.iterations.formatted()) steps, on this phone)", state: state(1))
                     row("Save", state: state(2))
                 }
                 if case .done(let seconds, let train, let splats) = builder.stage {

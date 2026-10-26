@@ -72,11 +72,11 @@ final class PreviewWorker {
             let method = try MethodA(beforeScan: before.url, beforeLabel: before.label) { status($0) }
             status("Ready. Point the phone at the table, about 30 cm away.")
             lock.lock(); ready = true; lock.unlock()
-            while true {
+            while true { autoreleasepool {                                   // see ModelViewer: images per frame
                 wake.wait()
                 lock.lock()
-                if stopRequested { lock.unlock(); break }
-                guard let frame = pending else { lock.unlock(); continue }
+                if stopRequested { lock.unlock(); return }
+                guard let frame = pending else { lock.unlock(); return }
                 pending = nil; processing = true
                 lock.unlock()
                 // Returns once the change cue is ready; the frame's fusion and mask arrive later from the
@@ -86,7 +86,7 @@ final class PreviewWorker {
                     self?.onResult?(result)
                 }
                 lock.lock(); processing = false; lock.unlock()
-            }
+            }; if stopRequested { break } }
             status("Stopped")
         } catch {
             status("Could not start: \(error.localizedDescription)")

@@ -52,7 +52,10 @@ final class PreviewController: NSObject, ObservableObject, ARSessionDelegate {
                 self.headline = r.headline
                 self.details = r.details
                 if let objects = r.objects { self.objects = objects }
-                if let pose = r.pose { self.lastPose = pose; self.lastIntrinsics = r.intrinsics }
+                // overlay, lastPose and lastIntrinsics must be assigned together: they describe the image shown, so an
+                // unplaced frame clears them and ObjectOverlay draws nothing on it.
+                self.lastPose = r.pose
+                self.lastIntrinsics = r.pose == nil ? nil : r.intrinsics
             }
         }
         worker = w

@@ -136,9 +136,11 @@ struct ScanDetailScreen: View {
                 if !runs.isEmpty {
                     Section("Results") {
                         ForEach(runs, id: \.beforeID) { run in
-                            let before = library.scans.first { $0.id == run.beforeID }?.label ?? "a deleted scan"
+                            let beforeScan = library.scans.first { $0.id == run.beforeID }
+                            let before = beforeScan?.label ?? "a deleted scan"
                             Button {
-                                shown = DetectionResult.load(run, beforeLabel: before, afterLabel: scan.label, afterURL: scan.url)
+                                shown = DetectionResult.load(run, before: beforeScan, beforeLabel: before, afterLabel: scan.label,
+                                                             afterURL: scan.url)
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {

@@ -227,7 +227,7 @@ struct ResultsView: View {
                     ForEach(setup, id: \.self) { row($0, Formatters.ms(s.timings.total($0))) }
                 }
             }
-            let finishing = [MethodA.Stage.refine, "B: " + MethodA.Stage.refine, MethodA.Stage.finalMasks]
+            let finishing = [MethodA.Stage.refine, "B: " + MethodA.Stage.refine, MethodA.Stage.finalMasks, DetectionRunner.findObjects]
             let perFrame = s.timings.stages.filter { !MethodA.Stage.setup.contains($0) && !finishing.contains($0) }
             if !perFrame.isEmpty {
                 Section {

@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import OSCDCore
+import simd
 import UIKit
 
 /// A finished (or saved) Detect run: the summary and one image per frame where the camera was placed,
@@ -16,23 +17,34 @@ struct DetectionResult: Identifiable {
     let b: Run?
     let beforeLabel: String
     let afterLabel: String
+    /// The objects found over the final masks (method B's when B ran, else A's); nil for runs saved before it existed.
+    let objects: ObjectReport?
+    /// The before-scan, when it is still on the phone.
+    let before: ScanInfo?
     var summary: DetectionSummary { a.summary }
 
     /// A saved run, read back from the after-scan's folder.
-    static func load(_ summary: DetectionSummary, beforeLabel: String, afterLabel: String, afterURL: URL) -> DetectionResult {
+    static func load(_ summary: DetectionSummary, before: ScanInfo?, beforeLabel: String, afterLabel: String,
+                     afterURL: URL) -> DetectionResult {
         func frames(_ method: String) -> [URL] {
             let dir = DetectionSummary.folder(in: afterURL, beforeID: summary.beforeID, method: method)
             return ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
                 .filter { $0.pathExtension == "jpg" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         }
         let b = DetectionSummary.load(in: afterURL, beforeID: summary.beforeID, method: "B").map { Run(summary: $0, frames: frames("B")) }
-        return DetectionResult(a: Run(summary: summary, frames: frames("A")), b: b, beforeLabel: beforeLabel, afterLabel: afterLabel)
+        let objects = ObjectReport.load(in: afterURL, beforeID: summary.beforeID, method: b != nil ? "B" : "A")
+        return DetectionResult(a: Run(summary: summary, frames: frames("A")), b: b, beforeLabel: beforeLabel, afterLabel: afterLabel,
+                               objects: objects, before: before)
     }
 }
 
 /// Runs Method A (and optionally B) over a recorded after-scan on one dedicated thread (splatx sessions
 /// are single-thread; fusion runs on its own threads).
 final class DetectionRunner: ObservableObject {
+    /// The object post-pass's step and its stage time in `summary.json`.
+    static let findObjects = "Find objects"
+    static let cacheFeatures = "Cache SAM2 features (fp16)"
+
     enum StepState: Equatable { case pending, active(String), done(String), failed(String) }
     struct Step: Identifiable { let id: Int; let title: String; var state: StepState }
 
@@ -49,7 +61,7 @@ final class DetectionRunner: ObservableObject {
     func start(before: ScanInfo, after: ScanInfo, refine: Bool, withB: Bool = false) {
         var titles = ["Load models and \(before.label)", "Check \(after.label), frame by frame" + (withB ? " (A and B)" : "")]
         if refine { titles.append(MethodA.Stage.refine) }
-        titles += ["Final change masks", "Save results"]
+        titles += ["Final change masks", Self.findObjects, "Save results"]
         steps = titles.enumerated().map { Step(id: $0.offset, title: $0.element, state: .pending) }
         latest = nil; progress = 0; result = nil; error = nil; running = true
         lock.lock(); cancelled = false; lock.unlock()
@@ -74,7 +86,9 @@ final class DetectionRunner: ObservableObject {
         var step = 0
         do {
             set(step, .active("Starting…"))
-            let method = try MethodA(beforeScan: before.url, beforeLabel: before.label, withB: withB) { [weak self] s in self?.set(0, .active(s)) }
+            let method = try MethodA(beforeScan: before.url, beforeLabel: before.label, withB: withB, withDepth: true) { [weak self] s in
+                self?.set(0, .active(s))
+            }
             var timings = method.setupTimings
             set(step, .done(String(format: "%d anchors · %.1f s", method.anchors.anchorCount, seconds(since: started))))
 
@@ -82,8 +96,11 @@ final class DetectionRunner: ObservableObject {
             let store = try SessionStore(open: after.url)
             let m = store.manifest
             let W = m.intrinsics.width, H = m.intrinsics.height
-            var kept: [(id: Int, rgb: [UInt8], valid: [Bool], pose: Pose)] = []
+            var kept: [Kept] = []
             let fusionTimes = LockedTimings()
+            // Each placed frame's SAM2 features, for the object post-pass; deleted however the run ends.
+            let cache = try EmbeddingCache(runID: "\(after.id)_\(before.id)")
+            defer { cache.removeAll() }
             let checkStart = DispatchTime.now().uptimeNanoseconds
             for (i, r) in m.keyframes.enumerated() {
                 if isCancelled { throw PreviewError.message("Cancelled") }
@@ -92,10 +109,19 @@ final class DetectionRunner: ObservableObject {
                 let frame = CameraFrame(rgb: rgb, depth: depth, confidence: conf, depthWidth: m.depthWidth,
                                         depthHeight: m.depthHeight, intrinsics: m.intrinsics)
                 let t0 = DispatchTime.now().uptimeNanoseconds
-                let out = try method.process(frame, fused: { [weak self] out, fused, _ in
-                    // Fusion thread: this frame's fusion and mask times, and its mask for the progress view.
+                let id = r.id
+                let out = try method.process(frame, fused: { [weak self] out, fused, context in
+                    // Fusion thread: this frame's fusion and mask times, its features for the object post-pass,
+                    // and its mask for the progress view.
                     fusionTimes.add(MethodA.Stage.fusion, fused.fusionMs)
                     fusionTimes.add(MethodA.Stage.mask, fused.maskMs)
+                    let tc = DispatchTime.now().uptimeNanoseconds
+                    do {
+                        try cache.write(frameID: id, embLive: context.embLive, embRender: context.embRender)
+                    } catch {
+                        AppLog.write("detect: frame \(id)'s SAM2 features were not cached: \(error.localizedDescription)")
+                    }
+                    fusionTimes.add(Self.cacheFeatures, Double(DispatchTime.now().uptimeNanoseconds - tc) / 1e6)
                     let image = PreviewController.image(PreviewComposite.overlay(rgb8: rgb, changed: fused.changed, valid: out.valid), W, H)
                     DispatchQueue.main.async { self?.latest = image }
                 }, fusedB: { _, fused, _ in
@@ -161,6 +187,12 @@ final class DetectionRunner: ObservableObject {
             set(step, .done(String(format: "%d frames · %.1f s", kept.count, seconds(since: t))))
 
             step += 1
+            let objects = try findObjects(method: method, after: store, kept: kept, cache: cache, beforeID: before.id,
+                                          afterID: after.id, step: step)
+            cache.removeAll()
+            timings.add(Self.findObjects, objects.timingsMs[Self.findObjects] ?? 0)
+
+            step += 1
             func summary(_ name: String) -> DetectionSummary {
                 DetectionSummary(beforeID: before.id, afterID: after.id, method: name, refined: refine,
                                  frames: m.keyframes.count, framesWithPose: kept.count,
@@ -171,15 +203,165 @@ final class DetectionRunner: ObservableObject {
             let b = method.hasB ? summary("B") : nil
             try b?.save(in: after.url)
             try a.save(in: after.url)
+            try objects.save(in: after.url)
             set(step, .done(String(format: "%.0f s in total", a.totalSeconds)))
             let result = DetectionResult(a: .init(summary: a, frames: runs["A"]!.frames),
                                          b: b.map { .init(summary: $0, frames: runs["B"]!.frames) },
-                                         beforeLabel: before.label, afterLabel: after.label)
+                                         beforeLabel: before.label, afterLabel: after.label, objects: objects, before: before)
             DispatchQueue.main.async { self.result = result; self.running = false }
         } catch {
             let message = error.localizedDescription
             set(step, .failed(message))
             DispatchQueue.main.async { self.error = message; self.running = false }
+        }
+    }
+
+    private typealias Kept = (id: Int, rgb: [UInt8], valid: [Bool], pose: Pose)
+
+    /// Spec §4.2: the object tracker over the kept frames in order, each with its final mask (B's when B ran),
+    /// so the object list agrees with the masks saved beside it. D_live comes from the after-scan's depth, D_ren
+    /// and the reference render are rendered again at the frame's pose, and the SAM2 features come from the cache
+    /// the fusion callbacks wrote. Then one PlanarICP fit per matched pair. Runs on the detect thread (it owns
+    /// `method`'s renderers).
+    private func findObjects(method: MethodA, after store: SessionStore, kept: [Kept], cache: EmbeddingCache,
+                             beforeID: String, afterID: String, step: Int) throws -> ObjectReport {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        let m = store.manifest
+        let W = m.intrinsics.width, H = m.intrinsics.height
+        let name = method.hasB ? "B" : "A"
+        var config = TrackerConfig()
+        config.roi = method.roi
+        let tracker = ObjectTracker(config: config)
+        var ingestMs: [Double] = []
+        var uncached = 0
+        let details = UserDefaults.standard.bool(forKey: "detectObjects")
+        if details {
+            let r = method.roi
+            AppLog.write(String(format: "objects-roi: (%.3f, %.3f, %.3f)–(%.3f, %.3f, %.3f) · %d kept frames",
+                                r.min.x, r.min.y, r.min.z, r.max.x, r.max.y, r.max.z, kept.count))
+        }
+        for (k, f) in kept.enumerated() {
+            if isCancelled { throw PreviewError.message("Cancelled") }
+            let emb: (embLive: [Float], embRender: [Float])
+            do {
+                emb = try cache.read(frameID: f.id)
+            } catch {
+                uncached += 1
+                AppLog.write("detect: frame \(f.id) skipped for objects (no cached SAM2 features): \(error.localizedDescription)")
+                continue
+            }
+            let (depth, conf) = try store.depth(.keyframes, id: f.id)
+            let dLive = CuesB.upsampleDepth(depth, confidence: conf, width: m.depthWidth, height: m.depthHeight, toWidth: W, toHeight: H)
+            let dRen = try method.expectedDepth(pose: f.pose) ?? [Float](repeating: .nan, count: W * H)
+            let mask = try method.changeMask(pose: f.pose, method: name)
+            let context = FrameContext(frameID: f.id, pose: f.pose, intrinsics: method.anchors.intrinsics,
+                                       changed: zip(mask, f.valid).map { $0 && $1 }, valid: f.valid, dLive: dLive, dRen: dRen,
+                                       live: FloatImage(rgb8: f.rgb, width: W, height: H), render: try method.render(pose: f.pose),
+                                       embLive: emb.embLive, embRender: emb.embRender)
+            let previous = details ? tracker.instances : []
+            let stats = tracker.ingest(context)
+            ingestMs.append(stats.milliseconds)
+            if details { Self.logFrame(context, stats, previous: previous, tracker) }
+            set(step, .active("\(k + 1) / \(kept.count) · \(tracker.instances.count) candidates"))
+        }
+        var fits = 0
+        for pair in tracker.pairsNeedingMotion() {
+            guard let l = tracker.instances.first(where: { $0.id == pair.leftID }),
+                  let a = tracker.instances.first(where: { $0.id == pair.arrivedID }) else { continue }
+            set(step, .active("Measuring how object \(l.id) moved…"))
+            tracker.setMotion(leftID: l.id, arrivedID: a.id, PlanarICP.fit(source: l.points, target: a.points))
+            fits += 1
+        }
+        let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+        let sorted = ingestMs.sorted()
+        let medianMs = sorted.isEmpty ? 0 : (sorted[(sorted.count - 1) / 2] + sorted[sorted.count / 2]) / 2
+        let report = tracker.report(beforeID: beforeID, afterID: afterID, method: name,
+                                    timingsMs: [Self.findObjects: totalMs, "Ingest (median per frame)": medianMs])
+        let shown = report.events.filter { !$0.hint }
+        set(step, .done(String(format: "%d %@ · %d frames · %.1f s", shown.count, shown.count == 1 ? "object" : "objects",
+                               ingestMs.count, totalMs / 1000)))
+        AppLog.write(String(format: "detect: find objects (%@) · %d frames ingested, %d without cached features · %.0f ms · median ingest %.1f ms · %d fits · ",
+                            name, ingestMs.count, uncached, totalMs, medianMs, fits)
+                     + (report.events.isEmpty ? "no events" : report.events.map { $0.summary(matchAccept: config.matchAccept) }.joined(separator: " | ")))
+        if UserDefaults.standard.bool(forKey: "detectObjects") { Self.logDetails(report, tracker) }
+        return report
+    }
+
+    /// `-detectObjects YES`, per ingested frame: the changed pixels by depth sign and |d| band, the components by
+    /// sign (pixels), the ingest counts, and every instance that disappeared in this frame (merged or dropped).
+    private static func logFrame(_ f: FrameContext, _ stats: IngestStats, previous: [TrackedInstance], _ tracker: ObjectTracker) {
+        let c = tracker.config
+        let W = f.intrinsics.width, H = f.intrinsics.height
+        let (sign, d) = ChangeSign.compute(dLive: f.dLive, dRen: f.dRen, valid: f.valid, tolerance: c.signTolerance)
+        var bySign = [Int8: Int](), noDepth = 0
+        var bands = [Int](repeating: 0, count: 5)          // |d| < 5, 5–10, 10–20, 20–50, ≥ 50 mm
+        for i in f.changed.indices where f.changed[i] {
+            guard d[i].isFinite else { noDepth += 1; continue }
+            bySign[sign[i], default: 0] += 1
+            let a = abs(d[i])
+            bands[a < 0.005 ? 0 : a < 0.01 ? 1 : a < 0.02 ? 2 : a < 0.05 ? 3 : 4] += 1
+        }
+        let comps = ChangeComponents.extract(changed: f.changed, sign: sign, d: d, width: W, height: H, minPixels: c.minPixels)
+        func list(_ s: Int8) -> String {
+            let sizes = comps.filter { $0.sign == s }.map(\.pixels.count).sorted(by: >)
+            return sizes.isEmpty ? "–" : sizes.prefix(6).map(String.init).joined(separator: ",") + (sizes.count > 6 ? ",…(\(sizes.count))" : "")
+        }
+        AppLog.write("objects-frame: \(f.frameID) · changed +\(bySign[1] ?? 0) −\(bySign[-1] ?? 0) 0:\(bySign[0] ?? 0) nodepth \(noDepth) · |d| mm <5 \(bands[0]) 5–10 \(bands[1]) 10–20 \(bands[2]) 20–50 \(bands[3]) ≥50 \(bands[4]) · components + [\(list(1))] − [\(list(-1))] 0 [\(list(0))] · created \(stats.created) merged \(stats.merged) dropped \(stats.dropped) · \(tracker.instances.count) instances")
+        // Each signed component back-projected as the tracker does: how many of its points lie within the ROI edge
+        // margin (or outside), which is what drops a new instance in the frame it is created.
+        if let roi = c.roi {
+            let toWorld = f.pose.inverse
+            for comp in comps where comp.sign != 0 {
+                let depth = comp.sign > 0 ? f.dLive : f.dRen
+                var n = 0, edge = 0
+                var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
+                var ys: [Float] = []
+                for i in comp.pixels where depth[i].isFinite && depth[i] > 0 {
+                    let p = toWorld.apply(f.intrinsics.unproject(SIMD2(Float(i % W), Float(i / W)), depth: depth[i]))
+                    n += 1; ys.append(p.y)
+                    lo = simd_min(lo, p); hi = simd_max(hi, p)
+                    if any(p - roi.min .< c.roiEdgeMargin) || any(roi.max - p .< c.roiEdgeMargin) { edge += 1 }
+                }
+                guard n > 0 else { continue }
+                ys.sort()
+                AppLog.write(String(format: "objects-comp: %d · sign %+d · %d px · %d points · %d at the ROI edge · median y %.3f · box (%.2f, %.2f, %.2f)–(%.2f, %.2f, %.2f)",
+                                    f.frameID, Int(comp.sign), comp.pixels.count, n, edge, ys[ys.count / 2], lo.x, lo.y, lo.z, hi.x, hi.y, hi.z))
+            }
+        }
+        let now = Set(tracker.instances.map(\.id))
+        for i in previous where !now.contains(i.id) {
+            let edge = c.roi.map { roi in
+                let lo = i.bbox.min - roi.min, hi = roi.max - i.bbox.max
+                return String(format: "edge gap %.3f", min(lo.min(), hi.min()))
+            } ?? ""
+            AppLog.write(String(format: "objects-gone: id %d · sign %+d · %@ · %d voxels · %d frames · observed %d misses %d · bbox (%.2f, %.2f, %.2f)–(%.2f, %.2f, %.2f) before this frame · %@",
+                                i.id, Int(i.sign), i.isConfirmed(c) ? "confirmed" : "unconfirmed", i.voxelCount, i.frames.count,
+                                i.observed, i.misses, i.bbox.min.x, i.bbox.min.y, i.bbox.min.z, i.bbox.max.x, i.bbox.max.y, i.bbox.max.z, edge))
+        }
+    }
+
+    /// `-detectObjects YES`: the report as one `objects:` JSON line, then every instance and every left × arrived
+    /// score, for checking the tracker on a recorded pair.
+    private static func logDetails(_ report: ObjectReport, _ tracker: ObjectTracker) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(report), let json = String(data: data, encoding: .utf8) {
+            AppLog.write("objects: " + json)
+        } else {
+            AppLog.write("objects: the report could not be encoded")
+        }
+        let c = tracker.config
+        for i in tracker.instances {
+            AppLog.write(String(format: "objects-instance: id %d · sign %+d · %@ · %d voxels · %d frames (%d–%d) · centroid (%.3f, %.3f, %.3f) · observed %d · misses %d · %d points",
+                                i.id, Int(i.sign), i.isConfirmed(c) ? "confirmed" : "unconfirmed", i.voxelCount, i.frames.count,
+                                i.firstSeen, i.lastSeen, i.centroid.x, i.centroid.y, i.centroid.z, i.observed, i.misses, i.points.count))
+        }
+        for l in tracker.instances where l.sign < 0 {
+            for a in tracker.instances where a.sign > 0 {
+                AppLog.write(String(format: "objects-score: left %d → arrived %d · %.3f%@", l.id, a.id, InstanceMatcher.score(l, a),
+                                    l.isConfirmed(c) && a.isConfirmed(c) ? "" : " (not both confirmed)"))
+            }
         }
     }
 }

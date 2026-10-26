@@ -284,6 +284,12 @@ final class MethodA {
         try referenceDepth?.expectedDepth(pose: pose, intrinsics: anchors.intrinsics)
     }
 
+    /// The before model rendered at `pose`, at the anchors' intrinsics, as `process` renders it (Detect's object
+    /// post-pass re-renders kept frames instead of holding every render in memory).
+    func render(pose: Pose) throws -> FloatImage {
+        try renderer.render(pose: pose, intrinsics: anchors.intrinsics)
+    }
+
     /// Waits until every submitted frame has been fused (A and B).
     func finishFusion() throws {
         try fusion.sync { _ in }

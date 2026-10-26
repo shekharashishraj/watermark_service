@@ -41,6 +41,9 @@ public struct TrackedInstance: Identifiable, Sendable {
     public var bestCrop: FloatImage?                      // live (sign ≥ 0) or render (sign < 0) crop of bestRect with 20 % margin
     public var firstSeen = 0; public var lastSeen = 0; public var misses = 0; public var observed = 0
     public var label: String?; public var labelConfidence: Float?
+    /// For a left instance in Detect: the before keyframe whose photo gave `feature` (`BeforePhotoFeature`) and the pixel rect
+    /// its points cover there; naming crops that photo at full resolution.
+    public var bestBeforeKeyframe: Int?; public var bestBeforeRect: PixelRect?
     public var voxelCount: Int { voxels.count }
     /// Hit-weighted voxel centres; cached by the tracker whenever `voxels` changes.
     public var centroid = SIMD3<Float>.zero
@@ -211,6 +214,12 @@ public final class ObjectTracker {
     public func setFeature(instance id: Int, _ feature: [Float], source: FeatureSource) {
         guard let j = instances.firstIndex(where: { $0.id == id }) else { return }
         instances[j].feature = feature; instances[j].featureSource = source
+    }
+
+    /// Records the before keyframe and pixel rect behind a left instance's `.beforePhoto` feature.
+    public func setBeforePhoto(instance id: Int, keyframe: Int, rect: PixelRect) {
+        guard let j = instances.firstIndex(where: { $0.id == id }) else { return }
+        instances[j].bestBeforeKeyframe = keyframe; instances[j].bestBeforeRect = rect
     }
 
     public func setLabel(instance id: Int, _ label: String, confidence: Float) {

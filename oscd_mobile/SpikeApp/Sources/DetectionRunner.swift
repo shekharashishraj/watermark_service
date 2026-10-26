@@ -296,6 +296,30 @@ final class DetectionRunner: ObservableObject {
             if details { Self.logFrame(context, stats, previous: previous, tracker) }
             set(step, .active("\(k + 1) / \(kept.count) · \(tracker.instances.count) candidates"))
         }
+        // A removed object has no live pixels: its feature comes from the before-scan's own photo that sees it best
+        // (spec §4.6), set before matching so `fitMotions` and the report use it.
+        let tp = DispatchTime.now().uptimeNanoseconds
+        var photoCache: [Int: [Float]] = [:]
+        var photoFeatures = 0
+        for l in tracker.instances where l.sign < 0 && l.isConfirmed(config) {
+            if isCancelled { throw PreviewError.message("Cancelled") }
+            set(step, .active("Looking at object \(l.id) in the before-scan's photos…"))
+            do {
+                guard let p = try BeforePhotoFeature.pooled(for: l.points, store: method.beforeStore, cache: &photoCache,
+                                                            encode: { try method.encodeSAM2($0) }) else {
+                    AppLog.write("detect: left object \(l.id) is in none of the before-scan's photos; its feature stays the render's")
+                    continue
+                }
+                tracker.setFeature(instance: l.id, p.feature, source: .beforePhoto)
+                tracker.setBeforePhoto(instance: l.id, keyframe: p.record.id, rect: p.rect)
+                photoFeatures += 1
+            } catch {
+                AppLog.write("detect: left object \(l.id)'s before-scan photo feature failed: \(error.localizedDescription)")
+            }
+        }
+        let photoMs = Double(DispatchTime.now().uptimeNanoseconds - tp) / 1e6
+        AppLog.write(String(format: "detect: before-photo features · %d left objects · %d photos encoded · %.0f ms", photoFeatures,
+                            photoCache.count, photoMs))
         let fits = tracker.fitMotions(willFit: { set(step, .active("Measuring how object \($0.leftID) moved…")) },
                                       stop: { isCancelled })
         if isCancelled { throw PreviewError.message("Cancelled") }
@@ -310,7 +334,8 @@ final class DetectionRunner: ObservableObject {
         AppLog.write(String(format: "semantic: before-LiDAR splat per frame · median %.1f ms · max %.1f ms · %d frames",
                             splatSorted.isEmpty ? 0 : splatSorted[splatSorted.count / 2], splatSorted.last ?? 0, splatSorted.count))
         let report = tracker.report(beforeID: beforeID, afterID: afterID, method: name,
-                                    timingsMs: [Self.findObjects: totalMs, "Ingest (median per frame)": medianMs])
+                                    timingsMs: [Self.findObjects: totalMs, "Ingest (median per frame)": medianMs,
+                                                "Before-photo features": photoMs])
         let shown = report.events.filter { !$0.hint }
         set(step, .done(String(format: "%d %@ · %d frames · %.1f s", shown.count, shown.count == 1 ? "object" : "objects",
                                ingestMs.count, totalMs / 1000)))

@@ -298,6 +298,10 @@ final class MethodA {
         try renderer.render(pose: pose, intrinsics: anchors.intrinsics)
     }
 
+    /// SAM2 embedding of `image` ([256, 64, 64] planar), encoded synchronously on the calling thread. For the detect and
+    /// preview threads only, between `process` calls (it shares the Neural Engine with `process`'s own encodes).
+    func encodeSAM2(_ image: FloatImage) throws -> [Float] { try sam.encode(image) }
+
     /// Waits until every submitted frame has been fused (A and B).
     func finishFusion() throws {
         try fusion.sync { _ in }

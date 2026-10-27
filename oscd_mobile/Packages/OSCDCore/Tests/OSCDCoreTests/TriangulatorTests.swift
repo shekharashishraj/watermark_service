@@ -98,4 +98,42 @@ final class TriangulatorTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(Double(agree) / Double(total), 0.95)
     }
+
+    /// Neighbour pairing: cameras on a circle looking at its centre pair with their nearest views only; one
+    /// facing away pairs with nothing.
+    func testNeighbourPairs() {
+        var poses = (0..<12).map { k -> Pose in
+            let a = Float(k) / 12 * 2 * .pi
+            let c = SIMD3<Float>(cos(a), 0, sin(a)) * 2
+            let z = simd_normalize(-c), x = simd_normalize(simd_cross(SIMD3(0, 1, 0), z)), y = simd_cross(z, x)
+            let R = simd_float3x3(rows: [x, y, z])
+            return Pose(R: R, t: -(R * c))
+        }
+        let pairs = AnchorBuilder.pairs(poses: poses, neighbours: 2, lookDepth: 2)
+        XCTAssertTrue(pairs.allSatisfy { $0.0 < $0.1 })
+        XCTAssertEqual(Set(pairs.map { "\($0.0)-\($0.1)" }).count, pairs.count)
+        XCTAssertLessThan(pairs.count, 12 * 11 / 2)
+        XCTAssertTrue(pairs.contains { $0 == (0, 1) })
+        poses.append(Pose(R: simd_float3x3(diagonal: SIMD3(-1, 1, -1)) * poses[0].R, t: poses[0].t))
+        let flipped = AnchorBuilder.pairs(poses: poses, neighbours: 2, lookDepth: 2)
+        XCTAssertFalse(flipped.contains { $0.1 == 12 && simd_dot(poses[$0.0].R.transpose[2], poses[12].R.transpose[2]) <= 0 })
+    }
+
+    /// The anchor cache returns the saved anchors, and nothing for other settings or other keypoints.
+    func testAnchorCacheRoundTrip() throws {
+        let kp = DescribedKeypoints(kpts: [SIMD2(10, 20), SIMD2(30, 40)], feats: [Float](repeating: 0.1, count: 128))
+        var kf = KeyframeAnchors(index: 0, pose: .identity, keypoints: kp)
+        kf.hasPt3d = [true, false]; kf.pts3d = [SIMD3(1, 2, 3), .zero]; kf.conf = [1, 0]
+        let set = AnchorSet(keyframes: [kf], intrinsics: K, maxError: 1.5, anchorCount: 1, yield: 0.5)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("anchors-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try AnchorCache.save(set, key: "k", to: url)
+        let back = try XCTUnwrap(AnchorCache.load(from: url, key: "k", keyframes: [(.identity, kp)], intrinsics: K))
+        XCTAssertEqual(back.keyframes[0].hasPt3d, [true, false])
+        XCTAssertEqual(back.keyframes[0].pts3d[0], SIMD3(1, 2, 3))
+        XCTAssertEqual(back.anchorCount, 1)
+        XCTAssertNil(AnchorCache.load(from: url, key: "other", keyframes: [(.identity, kp)], intrinsics: K))
+        let moved = DescribedKeypoints(kpts: [SIMD2(10, 21), SIMD2(30, 40)], feats: kp.feats)
+        XCTAssertNil(AnchorCache.load(from: url, key: "k", keyframes: [(.identity, moved)], intrinsics: K))
+    }
 }

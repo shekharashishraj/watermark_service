@@ -30,8 +30,9 @@ public struct AnchorSet: Sendable {
     public var yield: Double
 }
 
-/// O-SCD reference preparation (oscd.py): exhaustive pairwise matching with F-RANSAC, then
-/// Keyframe.update_3dpts for every keyframe.
+/// O-SCD reference preparation (oscd.py): pairwise matching with F-RANSAC, then
+/// Keyframe.update_3dpts for every keyframe. O-SCD matches every pair; `neighbours` limits each keyframe
+/// to the ones looking at the same spot, so large scans build in linear rather than quadratic time.
 public enum AnchorBuilder {
     /// O-SCD `max_error = max(match_max_error * width, 1.5)`.
     public static func maxError(width: Int, matchMaxError: Float = 2e-3) -> Float {
@@ -40,18 +41,29 @@ public enum AnchorBuilder {
 
     public static func build(keyframes input: [(pose: Pose, keypoints: DescribedKeypoints)], intrinsics: Intrinsics,
                              triangulationCams: Int = 8, hypotheses: Int = 2000, seed: UInt64 = 0,
-                             disambiguationDepths: (Float, Float) = (1, 10)) -> AnchorSet {
+                             disambiguationDepths: (Float, Float) = (1, 10), neighbours: Int? = nil,
+                             lookDepth: Float = 1, progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> AnchorSet {
         var kfs = input.enumerated().map { KeyframeAnchors(index: $0.offset, pose: $0.element.pose, keypoints: $0.element.keypoints) }
         let maxErr = maxError(width: intrinsics.width)
         let snapshot = kfs
-        let pairs = (0..<kfs.count).flatMap { i in ((i + 1)..<kfs.count).map { (i, $0) } }
+        let pairs = neighbours.map { Self.pairs(poses: kfs.map(\.pose), neighbours: $0, lookDepth: lookDepth) }
+            ?? (0..<kfs.count).flatMap { i in ((i + 1)..<kfs.count).map { (i, $0) } }
         var results = [MatchSet](repeating: MatchSet(idx: [], idxOther: []), count: pairs.count)
+        let lock = NSLock()
+        var done = 0
+        let step = max(1, pairs.count / 100)
+        progress?(0, pairs.count)
         results.withUnsafeMutableBufferPointer { out in
             DispatchQueue.concurrentPerform(iterations: pairs.count) { p in
                 let (i, j) = pairs[p]
                 var sampler = SeededSampler(seed: seed &+ UInt64(p) &* 0x9E37_79B9_7F4A_7C15)
                 out[p] = Matcher.matchFiltered(snapshot[i].keypoints, snapshot[j].keypoints,
                                                maxError: maxErr, hypotheses: hypotheses, sampler: &sampler)
+                guard let progress else { return }
+                lock.lock()
+                done += 1
+                if done % step == 0 || done == pairs.count { progress(done, pairs.count) }
+                lock.unlock()
             }
         }
         for (p, (i, j)) in pairs.enumerated() {
@@ -85,5 +97,21 @@ public enum AnchorBuilder {
         }
         return AnchorSet(keyframes: kfs, intrinsics: intrinsics, maxError: maxErr, anchorCount: anchors,
                          yield: validKeypoints > 0 ? Double(anchors) / Double(validKeypoints) : 0)
+    }
+
+    /// Each keyframe paired with the `neighbours` keyframes whose look-at points (`lookDepth` along the optical
+    /// axis) lie closest to its own, among those facing within 90° of it; pairs are unordered and unique (i < j).
+    public static func pairs(poses: [Pose], neighbours: Int, lookDepth: Float = 1) -> [(Int, Int)] {
+        let forward = poses.map { $0.R.transpose * SIMD3<Float>(0, 0, 1) }
+        let look = zip(poses, forward).map { $0.0.centre + lookDepth * $0.1 }
+        var keep = Set<Int>()
+        let n = poses.count
+        for i in 0..<n {
+            let near = (0..<n).filter { $0 != i && simd_dot(forward[i], forward[$0]) > 0 }
+                .sorted { simd_distance_squared(look[i], look[$0]) < simd_distance_squared(look[i], look[$1]) }
+                .prefix(neighbours)
+            for j in near { keep.insert(min(i, j) * n + max(i, j)) }
+        }
+        return keep.sorted().map { ($0 / n, $0 % n) }
     }
 }

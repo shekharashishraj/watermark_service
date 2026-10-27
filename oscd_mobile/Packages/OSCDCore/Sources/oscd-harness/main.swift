@@ -3,9 +3,10 @@ import OSCDCore
 import simd
 
 // Usage:
-//   oscd-harness anchors <session-dir> <XFeat_480x352.mlpackage> [depth1 depth2]
+//   oscd-harness anchors <session-dir> <XFeat_480x352.mlpackage> [depth1 depth2 [neighbours]]
 //     Builds O-SCD anchors for a recorded session and prints the anchor yield. The optional
-//     disambiguation depths test spec deviation D11 (O-SCD uses 1 and 10 world units).
+//     disambiguation depths test spec deviation D11 (O-SCD uses 1 and 10 world units); `neighbours`
+//     matches each keyframe with that many nearest views instead of every keyframe.
 //   oscd-harness pose <reference-session> <query-session> <XFeat_480x352.mlpackage> [depth1 depth2]
 //     Builds anchors from the reference session, estimates every query keyframe's pose with
 //     O-SCD's XFeat + P4P + mini-BA, and compares it with ARKit (both sessions must share one
@@ -17,7 +18,7 @@ import simd
 //     Writes every keyframe's XFeat keypoints and descriptors as <id>_kpts.npy (N × 2, working-image
 //     pixels) and <id>_feats.npy (N × 64), for tools/refine_poses.py.
 let usage = """
-usage: oscd-harness anchors <session-dir> <XFeat_480x352.mlpackage> [depth1 depth2]
+usage: oscd-harness anchors <session-dir> <XFeat_480x352.mlpackage> [depth1 depth2 [neighbours]]
        oscd-harness pose <reference-session> <query-session> <XFeat_480x352.mlpackage> [depth1 depth2]
        oscd-harness colmap <session-dir> <out-dir>
        oscd-harness features <session-dir> <XFeat_480x352.mlpackage> <out-dir>
@@ -54,11 +55,14 @@ if args[1] == "anchors" {
     let store = try SessionStore(open: URL(fileURLWithPath: args[2]))
     let xfeat = try XFeatModel(compiledModelURL: try XFeatModel.compile(URL(fileURLWithPath: args[3])))
     let depths: (Float, Float) = args.count >= 6 ? (Float(args[4])!, Float(args[5])!) : (1, 10)
+    let neighbours = args.count >= 7 ? Int(args[6]) : nil
     let views = try keyframes(store, xfeat)
     let t0 = Date()
-    let anchors = AnchorBuilder.build(keyframes: views, intrinsics: store.manifest.intrinsics, disambiguationDepths: depths)
-    print(String(format: "keyframes %d  anchors %d  yield %.3f  depths (%.2f, %.2f)  build %.1f s",
-                 views.count, anchors.anchorCount, anchors.yield, depths.0, depths.1, Date().timeIntervalSince(t0)))
+    let anchors = AnchorBuilder.build(keyframes: views, intrinsics: store.manifest.intrinsics, disambiguationDepths: depths,
+                                      neighbours: neighbours)
+    print(String(format: "keyframes %d  anchors %d  yield %.3f  depths (%.2f, %.2f)  neighbours %@  build %.1f s",
+                 views.count, anchors.anchorCount, anchors.yield, depths.0, depths.1, neighbours.map(String.init) ?? "all",
+                 Date().timeIntervalSince(t0)))
     // Where do the anchors sit? ARKit world is y-up; the ROI's floor is 2 cm under the tapped table point.
     if let roi = store.manifest.roi {
         let tableY = roi.min.y + 0.02

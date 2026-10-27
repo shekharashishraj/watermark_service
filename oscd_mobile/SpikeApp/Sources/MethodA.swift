@@ -19,6 +19,12 @@ struct CameraFrame {
 /// one thread only.
 final class MethodA {
     static let disambiguationDepths: (Float, Float) = (0.1, 1.0)     // spec D11
+    /// Before-scans with more keyframes than this match each keyframe with its `anchorNeighbours` nearest views
+    /// instead of every keyframe (O-SCD), which takes minutes on a 300-keyframe scan.
+    static let exhaustiveMatchingLimit = 60
+    static let anchorNeighbours = 20
+    /// The built anchors, saved in the scan folder; the key changes whenever the build settings do.
+    static let anchorCacheFile = "anchors.bin"
 
     /// Stage names as the results screen shows them.
     enum Stage {
@@ -134,9 +140,29 @@ final class MethodA {
             views.append((pose, try xfeat.detect(try store.rgb(.keyframes, id: r.id))))
         }
         lap(Stage.beforeKeypoints)
-        status("Building 3D anchors from \(beforeLabel)…")
-        anchors = AnchorBuilder.build(keyframes: views, intrinsics: store.manifest.intrinsics,
-                                      disambiguationDepths: Self.disambiguationDepths)
+        let neighbours = views.count > Self.exhaustiveMatchingLimit ? Self.anchorNeighbours : nil
+        let d = Self.disambiguationDepths
+        let cacheKey = "neighbours=\(neighbours.map(String.init) ?? "all") depths=\(d.0),\(d.1)"
+        let cacheURL = beforeScan.appendingPathComponent(Self.anchorCacheFile)
+        if let cached = AnchorCache.load(from: cacheURL, key: cacheKey, keyframes: views, intrinsics: store.manifest.intrinsics) {
+            status("Loaded \(beforeLabel)'s saved 3D anchors.")
+            anchors = cached
+        } else {
+            status("Building 3D anchors from \(beforeLabel)…")
+            let label = beforeLabel
+            var lastShown = -1
+            // The builder reports from its worker threads, one call at a time, and returns after the last.
+            anchors = withoutActuallyEscaping(status) { status in
+                AnchorBuilder.build(keyframes: views, intrinsics: store.manifest.intrinsics, disambiguationDepths: d,
+                                    neighbours: neighbours) { done, total in
+                    let pct = total > 0 ? 100 * done / total : 100
+                    guard pct / 5 != lastShown / 5 else { return }
+                    lastShown = pct
+                    status("Building 3D anchors from \(label)… \(pct)% (\(done)/\(total) image pairs)")
+                }
+            }
+            try? AnchorCache.save(anchors, key: cacheKey, to: cacheURL)
+        }
         estimator = PoseEstimator(anchors: anchors)
         lap(Stage.anchors)
         status("Opening \(beforeLabel)'s 3D model…")

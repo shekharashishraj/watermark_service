@@ -1,7 +1,7 @@
 From 96d9215d7ebaffc00bcd0c712365ea69e63956d1 Mon Sep 17 00:00:00 2001
 From: oscd <oscd@local>
 Date: Wed, 14 Oct 2026 10:17:06 -0700
-Subject: [PATCH 1/2] oscd_mobile: O-SCD change fusion (custom-loss backward,
+Subject: [PATCH 1/3] oscd_mobile: O-SCD change fusion (custom-loss backward,
  torch Adam, ADC)
 
 ---
@@ -876,7 +876,7 @@ index 0000000..2973ea1
 From 3aca114b6647ffa2cbe79f2a019e3479a0e87bbf Mon Sep 17 00:00:00 2001
 From: Ashish Raj Shekhar <ashekha9@asu.edu>
 Date: Sun, 25 Oct 2026 14:52:30 -0700
-Subject: [PATCH 2/2] oscd_mobile: optional per-point normals seed
+Subject: [PATCH 2/3] oscd_mobile: optional per-point normals seed
  surface-aligned discs (PocketGS I)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1052,6 +1052,265 @@ index 6529fec..2093edd 100644
  };
  
  TrainingInput training_input_from_colmap(const ColmapBundle& bundle, const std::string& images_dir);
+-- 
+2.54.0 (Apple Git-157)
+
+
+From 4affe47ab7d8ef5e7d76a6057be1eaf2a3214965 Mon Sep 17 00:00:00 2001
+From: Ashish Raj Shekhar <ashekha9@asu.edu>
+Date: Sun, 25 Oct 2026 19:20:40 -0700
+Subject: [PATCH 3/3] oscd_mobile: cap the iOS GT cache at 1.5 GiB
+ (full-resolution scans were memory-killed)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ Sources/SplatXCore/Trainer.cpp                | 82 +++++++++++++++++++
+ Sources/SplatXCore/include/splatx/Trainer.h   |  8 ++
+ Sources/SplatXTrainC/TrainC.cpp               | 36 +++++++-
+ Sources/SplatXTrainC/include/splatx_train_c.h |  3 +
+ Sources/splatx-cli/SplatXCLI.swift            |  5 ++
+ 5 files changed, 131 insertions(+), 3 deletions(-)
+
+diff --git a/Sources/SplatXCore/Trainer.cpp b/Sources/SplatXCore/Trainer.cpp
+index 7e62a9d..9f3de75 100644
+--- a/Sources/SplatXCore/Trainer.cpp
++++ b/Sources/SplatXCore/Trainer.cpp
+@@ -997,6 +997,10 @@ TrainStepResult Trainer::step_resident(const TrainingCamera& cam, const float* g
+ }
+ 
+ TrainStepResult Trainer::step(const TrainingCamera& cam, const float* gt_rgb, int iter) {
++    return step(cam, gt_rgb, nullptr, iter);
++}
++
++TrainStepResult Trainer::step(const TrainingCamera& cam, const float* gt_rgb, const float* gt_depth, int iter) {
+     if (!gt_rgb) throw std::invalid_argument("Trainer::step: null gt_rgb");
+     if (resident_ready()) return step_resident(cam, gt_rgb, iter);
+     const int64_t N = cloud_.count;
+@@ -1097,6 +1101,84 @@ TrainStepResult Trainer::step(const TrainingCamera& cam, const float* gt_rgb, in
+     // (host) v_means accumulation: folds in v_dirs from sh_bwd (dirs = means − campos → ∂dirs/∂means = I)
+     for (int64_t i = 0; i < N * 3; i++) pg.v_means[i] += sg.v_dirs[i];
+ 
++    // ===== oscd_mobile: LiDAR depth term (TrainConfig.depth_weight) =====
++    // Re-rasterises this step's projection with per-Gaussian colour (z_cam, 1, 0): channel 0 = Σwz,
++    // channel 1 = Σw. L = w · mean_valid |Σwz/Σw − D|. The raster/projection backward of that image gives
++    // gradients for means2d → means, conics → quats/scales, and opacities; they are added to the colour
++    // pass's gradients (pre-activation-chain, so the chain below applies once to the sum).
++    float depth_loss = 0.0f;
++    if (gt_depth && cfg_.depth_weight > 0.0f) {
++        Forward fd;
++        fd.degrees_to_use = 0;
++        fd.K_total = f.K_total;
++        fd.scales_lin = f.scales_lin;
++        fd.opacs_act = f.opacs_act;
++        fd.opacs_aa = f.opacs_aa;
++        fd.proj = f.proj;
++        fd.valid = f.valid;
++        fd.tile_width = f.tile_width;
++        fd.tile_height = f.tile_height;
++        fd.isect = f.isect;
++        fd.sorted = f.sorted;
++        fd.offsets = f.offsets;
++        fd.colors.assign(static_cast<size_t>(N) * 3, 0.0f);
++        const float* vm = cam.viewmat;
++        for (int64_t i = 0; i < N; i++) {
++            const float x = cloud_.means[i * 3], y = cloud_.means[i * 3 + 1], z = cloud_.means[i * 3 + 2];
++            fd.colors[i * 3 + 0] = vm[8] * x + vm[9] * y + vm[10] * z + vm[11];
++            fd.colors[i * 3 + 1] = 1.0f;
++        }
++        fd.raster = backend_.rasterize_fwd(make_raster_inputs(fd, cam, N));
++        std::vector<float> v_img(static_cast<size_t>(hw) * 3, 0.0f);
++        int64_t n_valid = 0;
++        for (int64_t p = 0; p < hw; p++) {
++            const float D = gt_depth[p];
++            if (!(D > 0.0f) || !std::isfinite(D)) continue;
++            n_valid++;
++        }
++        if (n_valid > 0) {
++            const float w = cfg_.depth_weight / static_cast<float>(n_valid);
++            for (int64_t p = 0; p < hw; p++) {
++                const float D = gt_depth[p];
++                if (!(D > 0.0f) || !std::isfinite(D)) continue;
++                const float S = fd.raster.render_colors[p * 3], A = fd.raster.render_colors[p * 3 + 1];
++                if (!(A >= 0.05f)) continue;
++                const float r = S / A - D;
++                const float sgn = r > 0.0f ? 1.0f : (r < 0.0f ? -1.0f : 0.0f);
++                depth_loss += w * std::fabs(r);
++                v_img[p * 3 + 0] = w * sgn / A;
++                v_img[p * 3 + 1] = -w * sgn * S / (A * A);
++            }
++            RasterizeBwdGradsIn din;
++            din.render_alphas = fd.raster.render_alphas.data();
++            din.last_ids = fd.raster.last_ids.data();
++            din.v_render_colors = v_img.data();
++            din.v_render_alphas = v_render_alphas.data();
++            RasterizeBwdGrads rd = backend_.rasterize_bwd(make_raster_inputs(fd, cam, N), din);
++            const ProjectionFusedInputs pdin =
++                make_proj_inputs(cloud_, cam, cfg_, fd.scales_lin, fd.opacs_act, cam.viewmat);
++            ProjectionFusedGradsIn pdgin;
++            pdgin.radii = fd.proj.radii.data();
++            pdgin.conics = fd.proj.conics.data();
++            pdgin.v_means2d = rd.v_means2d.data();
++            pdgin.v_depths = v_depths.data();
++            pdgin.v_conics = rd.v_conics.data();
++            std::vector<float> v_comp_d;
++            if (cfg_.antialiased) {
++                v_comp_d = chain_aa_opacity_grads_inplace(rd.v_opacities, fd.opacs_act.data(),
++                                                          fd.proj.compensations.data());
++                pdgin.compensations = fd.proj.compensations.data();
++                pdgin.v_compensations = v_comp_d.data();
++            }
++            ProjectionFusedGrads pd = backend_.projection_fused_bwd(pdin, pdgin);
++            for (size_t i = 0; i < pg.v_means.size(); i++) pg.v_means[i] += pd.v_means[i];
++            for (size_t i = 0; i < pg.v_quats.size(); i++) pg.v_quats[i] += pd.v_quats[i];
++            for (size_t i = 0; i < pg.v_scales.size(); i++) pg.v_scales[i] += pd.v_scales[i];
++            for (size_t i = 0; i < rg.v_opacities.size(); i++) rg.v_opacities[i] += rd.v_opacities[i];
++        }
++        loss += depth_loss;
++    }
++
+     // (host) Activation gradient chain — task-6 handover 3
+     chain_scale_grads_inplace(pg.v_scales, f.scales_lin.data());
+     chain_opacity_grads_inplace(rg.v_opacities, f.opacs_act.data());
+diff --git a/Sources/SplatXCore/include/splatx/Trainer.h b/Sources/SplatXCore/include/splatx/Trainer.h
+index eea093f..71043cd 100644
+--- a/Sources/SplatXCore/include/splatx/Trainer.h
++++ b/Sources/SplatXCore/include/splatx/Trainer.h
+@@ -248,6 +248,11 @@ struct TrainConfig {
+     // > 0 requires H, W >= 11 (validate_ssim_inputs — the valid map must be non-empty).
+     // A value ∉ [0,1] throws from the ctor.
+     float ssim_weight = 0.2f;
++    // oscd_mobile: LiDAR depth supervision (spec §7.3). loss += depth_weight · mean_valid |Σwz/Σw − D| over
++    // pixels with a depth (D > 0) and coverage Σw ≥ 0.05 — a second rasterisation of the same Gaussians
++    // with colour = (camera z, 1, 0), differentiated into means (via the 2D projection), scales and
++    // opacities; the depth's own dependence on the means is not propagated. Host path only. 0 = off.
++    float depth_weight = 0.0f;
+     // Anti-aliasing (the Mip-Splatting 2D compensation, Phase 3 Task 4 — reproducing gsplat
+     // rendering.py rasterize_mode="antialiased"): when true, proj fwd runs with
+     // calc_compensations=true and outputs comp = √(det Σ′ / det(Σ′ + eps2d·I)) (kProjCalcComp —
+@@ -399,6 +404,9 @@ public:
+     // With cfg.resident and backend support, this takes the resident step path (otherwise the
+     // previous host round-trip D7 assembly).
+     TrainStepResult step(const TrainingCamera& cam, const float* gt_rgb, int iter);
++    // oscd_mobile: step with LiDAR depth supervision. gt_depth [H,W] metres, 0/NaN = no depth; may be
++    // null (then identical to step). Needs depth_weight > 0 and resident = false to have any effect.
++    TrainStepResult step(const TrainingCamera& cam, const float* gt_rgb, const float* gt_depth, int iter);
+     // Forward-only render (eval/preview — full sh_degree). Returns [H,W,3].
+     // When resident is active it uses the resident forward — the same kernel and activation path as
+     // the forward of step() (preserving bit-exact consistency for a self-rendered GT).
+diff --git a/Sources/SplatXTrainC/TrainC.cpp b/Sources/SplatXTrainC/TrainC.cpp
+index 237abe2..f24ef2e 100644
+--- a/Sources/SplatXTrainC/TrainC.cpp
++++ b/Sources/SplatXTrainC/TrainC.cpp
+@@ -263,7 +263,8 @@ extern "C" int32_t sx_train_run_args(const SxTrainArgs* args, char* err_buf,
+         const int32_t eval_every = args->eval_every;
+         const float ssim_weight = args->ssim_weight;
+         const int32_t antialiased = args->antialiased;
+-        const int32_t resident = args->resident;
++        const float depth_weight = args->depth_weight > 0.0f ? args->depth_weight : 0.0f;
++        const int32_t resident = depth_weight > 0.0f ? 0 : args->resident;   // the depth term is host-path only
+         const char* resume_checkpoint = args->resume_checkpoint;
+         const char* save_checkpoint_path = args->save_checkpoint_path;
+         const int32_t checkpoint_every = args->checkpoint_every;
+@@ -446,6 +447,7 @@ extern "C" int32_t sx_train_run_args(const SxTrainArgs* args, char* err_buf,
+         cfg.total_iters = iters;
+         cfg.scene_scale = splatx::scene_scale_from_cameras(ti.cameras);
+         cfg.ssim_weight = ssim_weight; // λ — loss = (1-λ)·L1 + λ·(1-SSIM) (Phase 3 Task 3)
++        cfg.depth_weight = depth_weight;
+         // AA (Phase 3 Task 4 — reproduces gsplat rasterize_mode="antialiased"): isect and raster
+         // consume opacity_aa = sigmoid(op)·comp. Default off = consistent with the gsplat default
+         // "classic".
+@@ -613,6 +615,7 @@ extern "C" int32_t sx_train_run_args(const SxTrainArgs* args, char* err_buf,
+         // component — made once above. The limit is printed alongside in the log so that the
+         // reason for on/off can be diagnosed from the user's log alone.
+         std::vector<splatx::ImageF32> gt_cache(cache_gt ? ti.cameras.size() : 0);
++        std::vector<std::vector<float>> depth_cache(ti.cameras.size());   // oscd_mobile depth term
+         std::printf("gt cache: %s (estimated %.2f GiB, limit %.2f GiB)\n",
+                     cache_gt ? "on" : "off",
+                     static_cast<double>(gt_bytes_estimate) / (1024.0 * 1024.0 * 1024.0),
+@@ -792,9 +795,34 @@ extern "C" int32_t sx_train_run_args(const SxTrainArgs* args, char* err_buf,
+             const int64_t cam_idx = split.train[static_cast<size_t>(it) % split.train.size()];
+             const splatx::TrainingCamera& cam = ti.cameras[static_cast<size_t>(cam_idx)];
+             const splatx::ImageF32& gt = load_gt(static_cast<size_t>(cam_idx));
++            const float* gt_depth = nullptr;
++            if (depth_weight > 0.0f) {
++                auto& slot = depth_cache[static_cast<size_t>(cam_idx)];
++                if (slot.empty()) {
++                    // <data>/depth/<stem>.f32 next to images/: W×H float32, 0 = no depth
++                    std::string p = cam.image_path;
++                    const auto slash = p.find_last_of('/');
++                    std::string stem = slash == std::string::npos ? p : p.substr(slash + 1);
++                    const auto dot = stem.find_last_of('.');
++                    if (dot != std::string::npos) stem = stem.substr(0, dot);
++                    const std::string dir = p.substr(0, slash == std::string::npos ? 0 : slash);
++                    const auto parent = dir.find_last_of('/');
++                    const std::string depth_path = dir.substr(0, parent == std::string::npos ? 0 : parent) + "/depth/" + stem + ".f32";
++                    const size_t n = static_cast<size_t>(cam.width) * cam.height;
++                    slot.assign(n, 0.0f);
++                    if (FILE* fh = std::fopen(depth_path.c_str(), "rb")) {
++                        const size_t got = std::fread(slot.data(), sizeof(float), n, fh);
++                        std::fclose(fh);
++                        if (got != n) throw std::runtime_error("depth file " + depth_path + " has " + std::to_string(got) + " floats, expected " + std::to_string(n));
++                    } else {
++                        throw std::runtime_error("depth_weight > 0 but cannot open " + depth_path);
++                    }
++                }
++                gt_depth = slot.data();
++            }
+ 
+             const auto t_it = Clock::now();
+-            const splatx::TrainStepResult r = trainer.step(cam, gt.rgb.data(), it);
++            const splatx::TrainStepResult r = trainer.step(cam, gt.rgb.data(), gt_depth, it);
+             const double step_ms = ms_since(t_it);
+ 
+             if (it == start_iter) first_loss = r.loss;
+@@ -1293,7 +1321,9 @@ extern "C" int32_t sx_suggest_factor(int32_t image_w, int32_t image_h, int32_t i
+ // 4 GiB floor.
+ extern "C" uint64_t sx_gt_cache_limit_bytes(uint64_t physical_ram_bytes, int32_t ios) {
+     const uint64_t floor_bytes = uint64_t{4} << 30; // the previous fixed 4 GiB limit, kept as the floor
+-    if (ios) return floor_bytes;                    // conservative for jetsam — the previous behavior as is
++    // oscd_mobile: on iOS the fp32 GT cache of a full-resolution scan (131 × 1920×1440 × 12 B = 4.3 GB) got the
++    // app killed mid-training on an iPhone 17 Pro; over 1.5 GiB the images are decoded per step instead.
++    if (ios) return uint64_t{3} << 29;              // 1.5 GiB
+     const uint64_t half_ram = physical_ram_bytes / 2;
+     return half_ram > floor_bytes ? half_ram : floor_bytes;
+ }
+diff --git a/Sources/SplatXTrainC/include/splatx_train_c.h b/Sources/SplatXTrainC/include/splatx_train_c.h
+index b7864dc..182f280 100644
+--- a/Sources/SplatXTrainC/include/splatx_train_c.h
++++ b/Sources/SplatXTrainC/include/splatx_train_c.h
+@@ -339,6 +339,9 @@ typedef struct SxTrainArgs {
+     void* progress_user;              // passed through to progress unchanged
+     SxTrainStats* stats;              // NULL allowed — receives the end-of-run summary (valid for
+                                       // returns 0/2/3)
++    // oscd_mobile: LiDAR depth supervision weight (0 = off). Needs <data>/depth/<image stem>.f32: W×H
++    // float32 metres at the training image size, 0 = no depth. Host path only (resident is forced off).
++    float depth_weight;
+     // ---- App round 2 Task 1 extension: live PLY export (at the end of the struct — the offsets
+     //      of the existing fields are unchanged, so zero-init consumers stay safe. spec
+     //      2026-07-20-trainer-app-live-polish §2) ----
+diff --git a/Sources/splatx-cli/SplatXCLI.swift b/Sources/splatx-cli/SplatXCLI.swift
+index aeb54fe..18b2801 100644
+--- a/Sources/splatx-cli/SplatXCLI.swift
++++ b/Sources/splatx-cli/SplatXCLI.swift
+@@ -79,6 +79,10 @@ struct Train: ParsableCommand {
+             help: "SSIM loss weight λ ∈ [0,1] — loss = (1-λ)·L1 + λ·(1-SSIM) (gsplat ssim_lambda 0.2, 0=pure L1)")
+     var ssimWeight: Float = 0.2
+ 
++    @Option(name: .customLong("depth-weight"),
++            help: "oscd_mobile: LiDAR depth supervision weight (0 = off). Reads <data>/depth/<stem>.f32 (W×H float32 metres, 0 = none). Forces the host path")
++    var depthWeight: Float = 0
++
+     @Flag(name: .long,
+           help: "Anti-aliasing (Mip-Splatting 2D compensation) — trains with opacity multiplied by the projection compensation factor (reproduces gsplat rasterize_mode=antialiased; default off=classic — the published-benchmark condition. Standard PLY has no AA flag, so generic viewers render without compensation; .spz output records the antialiased flag in its header — see the README caveat)")
+     var antialiased: Bool = false
+@@ -138,6 +142,7 @@ struct Train: ParsableCommand {
+                                 a.test_split = Int32(testSplit)
+                                 a.eval_every = Int32(evalEvery)
+                                 a.ssim_weight = ssimWeight
++                                a.depth_weight = depthWeight
+                                 a.antialiased = antialiased ? 1 : 0
+                                 a.resident = noResident ? 0 : 1
+                                 a.resume_checkpoint = resumePtr
 -- 
 2.54.0 (Apple Git-157)
 

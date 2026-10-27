@@ -21,15 +21,27 @@ final class ReferenceBuilder: ObservableObject {
     /// held-out in 23 s, Standard 25.0 dB in 2 min, High 25.4 dB in 4 min; more steps or Gaussians beyond that gave
     /// nothing. Standard is the default; Quick is for a change-detection reference in a hurry.
     enum Quality: String, CaseIterable, Identifiable {
-        case quick, standard, high
+        case quick, standard, high, brush
         var id: String { rawValue }
-        var iterations: Int32 { switch self { case .quick: 2000; case .standard: 8000; case .high: 16000 } }
-        var maxPoints: Int64 { switch self { case .quick: 200_000; case .standard: 400_000; case .high: 600_000 } }
+        var iterations: Int32 {
+            switch self {
+            case .quick: 2000; case .standard: 8000; case .high: 8000
+            case .brush: Int32(UserDefaults.standard.integer(forKey: "brushSteps")).nonZero ?? 7000   // `-brushSteps N` for checks
+            }
+        }
+        var maxPoints: Int64 { switch self { case .quick: 200_000; case .standard: 400_000; case .high: 600_000; case .brush: 0 } }
+        /// Brush (adaptive density control, mip-splatting) instead of splatx: the trainer dinovi uses.
+        var usesBrush: Bool { self == .brush }
+        /// High trains at the full capture resolution (1920×1440) from the keyframes' JPEGs: what the model can
+        /// learn is bounded by the training image. Scans recorded before the JPEGs existed fall back to 480×360.
+        var fullResolution: Bool { self == .high || self == .brush }
+        var factor: Int32 { 1 }
         var label: String {
             switch self {
             case .quick: "Quick (2,000 steps, about 30 s)"
             case .standard: "Standard (8,000 steps, about 2 min)"
-            case .high: "High (16,000 steps, 600k Gaussians, 5 min or more)"
+            case .high: "High (full resolution 1920×1440, 8,000 steps, 600k Gaussians)"
+            case .brush: "Brush (7,000 steps, grows to ~1M Gaussians, 1280 px) — experimental"
             }
         }
         static let defaultsKey = "trainQuality"
@@ -75,7 +87,13 @@ final class ReferenceBuilder: ObservableObject {
         do {
             try? fm.removeItem(at: work)
             let t0 = Date()
-            let export = try ColmapExport.write(session: try SessionStore(open: scan.url), to: work.appendingPathComponent("colmap"))
+            let session = try SessionStore(open: scan.url)
+            let fullRes = Quality.current.fullResolution && session.hasFullImages
+            // The export loads every keyframe's arrays on this thread: drain their autoreleased objects before training.
+            let export = try autoreleasepool {
+                try ColmapExport.write(session: session, to: work.appendingPathComponent("colmap"), fullResolution: fullRes)
+            }
+            log("\(scan.id): after export mem \(AppLog.residentMB()) MB")
             let exportSec = Date().timeIntervalSince(t0)
             DispatchQueue.main.async { self.exportSeconds = exportSec }
             log(String(format: "%@: exported %d images, %d points in %.1f s", scan.id, export.images, export.points, exportSec))
@@ -85,12 +103,41 @@ final class ReferenceBuilder: ObservableObject {
             }
 
             let quality = Quality.current
-            log("\(scan.id): training \(quality.rawValue): \(quality.iterations) steps, up to \(quality.maxPoints) Gaussians")
+            log("\(scan.id): training \(quality.rawValue): \(quality.iterations) steps, up to \(quality.maxPoints) Gaussians, "
+                + (fullRes ? "\(session.manifest.captureWidth / Int(quality.factor))×\(session.manifest.captureHeight / Int(quality.factor)) from the full-size JPEGs" : "480×360"))
             publish(.training(iter: 0, total: Int(quality.iterations), splats: export.points, secondsLeft: .nan, thermal: 0))
             startThermalFeed()
             defer { stopThermalFeed() }
             let out = work.appendingPathComponent("reference.ply")
             var stats = SxTrainStats()
+            if quality.usesBrush {
+                let t0 = Date()
+                // `-brushMaxRes N` for checks (default 1280). Memory and progress go to the log once a second.
+                var bopts = BrushTrainer.Options(steps: UInt32(quality.iterations))
+                if let r = UInt32(exactly: UserDefaults.standard.integer(forKey: "brushMaxRes")), r > 0 { bopts.maxResolution = r }
+                if let m = UInt32(exactly: UserDefaults.standard.integer(forKey: "brushMaxSplats")), m > 0 { bopts.maxSplats = m }   // `-brushMaxSplats N`
+                log("\(scan.id): Brush starting, \(bopts.maxResolution) px, up to \(bopts.maxSplats) splats, mem \(AppLog.residentMB()) MB")
+                var lastLog = Date()
+                let ply = try BrushTrainer.train(dataset: work.appendingPathComponent("colmap"), outputDir: work.appendingPathComponent("brush"),
+                                                 options: bopts) { [weak self] iter in
+                    guard let self else { return }
+                    if Date().timeIntervalSince(lastLog) > 1 || iter <= 2 {
+                        lastLog = Date()
+                        AppLog.write("build: Brush step \(iter)  mem \(AppLog.residentMB()) MB", sync: true)
+                    }
+                    let now = Date().timeIntervalSince1970
+                    guard now - lastPublish > 0.2 || iter >= Int(quality.iterations) else { return }
+                    lastPublish = now
+                    let elapsed = Date().timeIntervalSince(t0)
+                    publish(.training(iter: iter, total: Int(quality.iterations), splats: 0,
+                                      secondsLeft: iter > 0 ? elapsed / Double(iter) * Double(Int(quality.iterations) - iter) : .nan, thermal: 0))
+                }
+                try fm.moveItem(at: ply, to: out)
+                stats.train_seconds = Date().timeIntervalSince(t0)
+                stats.completed_iters = quality.iterations
+                stats.exported_splats = 0
+                log(String(format: "%@: Brush trained %d steps in %.1f s", scan.id, quality.iterations, stats.train_seconds))
+            } else {
             var err = [CChar](repeating: 0, count: 4096)
             let rc: Int32 = work.appendingPathComponent("colmap").path.withCString { data in
                 out.path.withCString { outPath in
@@ -98,7 +145,7 @@ final class ReferenceBuilder: ObservableObject {
                         withUnsafeMutablePointer(to: &stats) { statsPtr in
                             var a = SxTrainArgs()
                             a.data_dir = data
-                            a.factor = 1
+                            a.factor = fullRes ? quality.factor : 1
                             a.iters = quality.iterations
                             a.max_points = quality.maxPoints
                             a.sh_degree = 3
@@ -133,6 +180,7 @@ final class ReferenceBuilder: ObservableObject {
             }
             log(String(format: "%@: trained %d iterations in %.1f s, %lld Gaussians", scan.id, stats.completed_iters,
                        stats.train_seconds, stats.exported_splats))
+            }
 
             publish(.saving)
             let dest = scan.url.appendingPathComponent(ScanCatalog.referenceFile)
@@ -176,3 +224,5 @@ final class ReferenceBuilder: ObservableObject {
         thermalObserver = nil
     }
 }
+
+private extension Int32 { var nonZero: Int32? { self == 0 ? nil : self } }

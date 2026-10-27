@@ -22,7 +22,7 @@ final class ModelViewer: ObservableObject {
         var index: Int
         var yaw: Float = 0
         var pitch: Float = 0
-        static let maxYaw: Float = 0.8, maxPitch: Float = 0.5
+        static let maxYaw: Float = 0.26, maxPitch: Float = 0.26        // ±15°: further than that looks at what no frame covered
     }
 
     /// What the render thread draws: a world-to-camera pose with its intrinsics. `portrait` is true
@@ -53,7 +53,11 @@ final class ModelViewer: ObservableObject {
     private(set) var keyframeCount = 0
 
     private var keyframes: [simd_float4x4] = []
-    private var walkIntrinsics: Intrinsics?
+    private var walkBase: Intrinsics?
+    /// Walk render scale (× working size). Final views match the screen (the sensor image's height spans the
+    /// screen width); while dragging a lighter 1.5× keeps the look-around responsive.
+    private var walkFullScale: Float = 2.5
+    static let walkDragScale: Float = 3.5                                 // same as the final view: quality over drag frame rate
     private let cond = NSCondition()
     private var requested: Request?
     private var stopping = false
@@ -67,10 +71,8 @@ final class ModelViewer: ObservableObject {
             }
             keyframes = m.keyframes.map { simd_float4x4(columnMajor: $0.arkitCameraToWorld) }
             keyframeCount = keyframes.count
-            // Walk renders at 1.5× the working size with the scan's own camera.
-            let K = m.intrinsics, s: Float = 1.5
-            walkIntrinsics = Intrinsics(f: K.f * s, cx: (K.cx + 0.5) * s - 0.5, cy: (K.cy + 0.5) * s - 0.5,
-                                        width: Int(Float(K.width) * s), height: Int(Float(K.height) * s))
+            walkBase = m.intrinsics
+            walkFullScale = min(Float(UIScreen.main.nativeBounds.width) / Float(m.intrinsics.height), 3.5)
             let target = SceneRegion.focus(arkitCameraToWorld: keyframes, within: box)
             let kf = keyframes[keyframes.count / 2]
             let start = OrbitCamera(lookingFrom: Pose.fromARKitCameraToWorld(kf), at: target)
@@ -117,8 +119,11 @@ final class ModelViewer: ObservableObject {
     }
 
     /// Walk mode.
-    func setWalk(_ w: Walk) {
-        guard !keyframes.isEmpty, let K = walkIntrinsics else { return }
+    func setWalk(_ w: Walk, dragging: Bool = false) {
+        guard !keyframes.isEmpty, let K0 = walkBase else { return }
+        let s = walkFullScale
+        let K = Intrinsics(f: K0.f * s, cx: (K0.cx + 0.5) * s - 0.5, cy: (K0.cy + 0.5) * s - 0.5,
+                           width: Int(Float(K0.width) * s), height: Int(Float(K0.height) * s))
         var w = w
         w.index = min(max(w.index, 0), keyframes.count - 1)
         w.yaw = min(max(w.yaw, -Walk.maxYaw), Walk.maxYaw)
@@ -129,7 +134,7 @@ final class ModelViewer: ObservableObject {
         let Rd = simd_float3x3(simd_quatf(angle: w.yaw, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: w.pitch, axis: SIMD3(1, 0, 0)))
         let pose = Pose(R: Rd * base.R, t: Rd * base.t)
         request(Request(pose: pose, intrinsics: K, portrait: true,
-                        label: String(format: "walk keyframe %d/%d yaw %.0f° pitch %.0f°", w.index + 1, keyframes.count, w.yaw * 180 / .pi, w.pitch * 180 / .pi)))
+                        label: String(format: "walk keyframe %d/%d yaw %.0f° pitch %.0f° %dx%d", w.index + 1, keyframes.count, w.yaw * 180 / .pi, w.pitch * 180 / .pi, K.width, K.height)))
     }
 
     func step(_ delta: Int) {
@@ -273,10 +278,13 @@ struct ModelViewerScreen: View {
                         // The screen is the sensor image turned 90°: a horizontal finger move turns the camera about
                         // its sensor-vertical axis.
                         w.yaw += dy * 0.004; w.pitch += dx * 0.004
-                        viewer.setWalk(w)
+                        viewer.setWalk(w, dragging: true)
                     }
                 }
-                .onEnded { _ in lastDrag = .zero }
+                .onEnded { _ in
+                    lastDrag = .zero
+                    if viewer.mode == .walk, let w = viewer.walk { viewer.setWalk(w) }      // the full-resolution view
+                }
                 .simultaneously(with: MagnificationGesture()
                     .onChanged { s in
                         guard viewer.mode == .orbit, var cam = viewer.camera else { return }

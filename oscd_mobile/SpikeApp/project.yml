@@ -28,6 +28,14 @@ targets:
       - package: SplatX
         product: SplatXTrainC
       - package: OSCDFusion
+      # Brush (Apache-2.0) trainer, built for iOS from ~/projects/remus/engine/brush:
+      #   cargo build --release --target aarch64-apple-ios -p brush-c
+      #   cp target/aarch64-apple-ios/release/libbrush_c.a ~/Library/Caches/oscd-mobile/brush-ios/
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: CoreFoundation.framework
     info:
       path: Sources/Info.plist
       properties:
@@ -44,6 +52,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.veripheye.changes3d
         DEVELOPMENT_TEAM: 7FJWHJ5QJJ
         SWIFT_VERSION: "5.0"
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Native/BrushC
+        LIBRARY_SEARCH_PATHS: $(HOME)/Library/Caches/oscd-mobile/brush-ios
+        OTHER_LDFLAGS: -lbrush_c -lc++ -lresolv
 schemes:
   OSCDSpike:
     build:

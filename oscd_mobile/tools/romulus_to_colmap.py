@@ -40,7 +40,17 @@ def main():
     ap.add_argument("--voxel", type=float, default=0.004)
     ap.add_argument("--depth", action="store_true", help="also write depth/<stem>.f32 at the image size (for --depth-weight)")
     a = ap.parse_args()
-    man = json.load(open(os.path.join(a.capture, "capture.json")))
+    # A chunked capture (uploaded in parts) has capture_chunk0.json, capture_chunk1.json, … instead of capture.json;
+    # the frames continue across chunks in one ARKit world.
+    if os.path.exists(os.path.join(a.capture, "capture.json")):
+        man = json.load(open(os.path.join(a.capture, "capture.json")))
+    else:
+        chunks = sorted(f for f in os.listdir(a.capture) if f.startswith("capture_chunk") and f.endswith(".json"))
+        if not chunks:
+            raise SystemExit("no capture.json or capture_chunk*.json in " + a.capture)
+        man = json.load(open(os.path.join(a.capture, chunks[0])))
+        for c in chunks[1:]:
+            man["frames"] += json.load(open(os.path.join(a.capture, c)))["frames"]
     assert man.get("coordinates", "opengl") == "opengl", man.get("coordinates")
     dw, dh = man["depthResolution"]
     os.makedirs(os.path.join(a.out, "images"), exist_ok=True)
@@ -50,10 +60,18 @@ def main():
     flip = np.diag([1.0, -1.0, -1.0, 1.0])
     cam_lines, img_lines, pts, cols = [], [], [], []
     frames = man["frames"][:: max(a.stride, 1)]
-    for n, fr in enumerate(frames):
+    skipped = 0
+    n = -1
+    for fr in frames:
         W, H = fr["resolution"]
         fx, fy, cx, cy = fr["intrinsics"][:4]          # newer captures append a 5th value (0)
         name = fr["image"]
+        try:                                           # a chunked upload can leave a truncated JPEG behind
+            rgb = np.asarray(Image.open(os.path.join(a.capture, name)).convert("RGB"))
+        except OSError:
+            skipped += 1
+            continue
+        n += 1
         shutil.copyfile(os.path.join(a.capture, name), os.path.join(a.out, "images", name))
         c2w = np.array(fr["pose4x4"], dtype=np.float64).reshape(4, 4).T @ flip   # column-major → OpenCV axes
         w2c = np.linalg.inv(c2w)
@@ -73,7 +91,6 @@ def main():
         z = depth[v, u]
         cam = np.stack([(u - cxd) / fd * z, (v - cyd) / (fy * s) * z, z, np.ones_like(z)])
         world = (c2w @ cam)[:3].T
-        rgb = np.asarray(Image.open(os.path.join(a.capture, name)).convert("RGB"))
         uw = np.round((u + 0.5) / s - 0.5 - crop_x).astype(int)
         vw = np.clip(np.round((v + 0.5) / s - 0.5).astype(int), 0, H - 1)
         inside = (uw >= 0) & (uw < W)
@@ -94,7 +111,7 @@ def main():
     with open(os.path.join(a.out, "sparse", "0", "points3D.txt"), "w") as fh:
         for i, (p, c) in enumerate(zip(pts, cols)):
             fh.write(f"{i + 1} {p[0]} {p[1]} {p[2]} {c[0]} {c[1]} {c[2]} 0\n")
-    print(f"{len(frames)} images, {len(pts)} points → {a.out}")
+    print(f"{n + 1} images ({skipped} unreadable skipped), {len(pts)} points → {a.out}")
 
 
 if __name__ == "__main__":

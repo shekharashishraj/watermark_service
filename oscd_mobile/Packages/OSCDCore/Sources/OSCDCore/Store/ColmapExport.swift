@@ -21,7 +21,10 @@ public enum ColmapExport {
     /// and a scan that has full-size images, the images are those JPEGs (`<id>.jpg`) and the camera is scaled
     /// to the capture size; the LiDAR points are the same either way.
     @discardableResult
-    public static func write(session: SessionStore, to dir: URL, voxel: Double = 0.004, fullResolution: Bool = false) throws -> Result {
+    /// `maxPoints` keeps every k-th point after the voxel dedupe (the trainers subsample to 150–600k anyway; a room
+    /// scan's 4M-point text file cost the phone 1.5 GB of memory before training even started).
+    public static func write(session: SessionStore, to dir: URL, voxel: Double = 0.004, fullResolution: Bool = false,
+                             maxPoints: Int = 200_000) throws -> Result {
         let m = session.manifest
         let K = m.intrinsics
         let full = fullResolution && session.hasFullImages
@@ -30,7 +33,12 @@ public enum ColmapExport {
         try fm.createDirectory(at: images, withIntermediateDirectories: true)
         try fm.createDirectory(at: sparse, withIntermediateDirectories: true)
 
-        var imageLines = "", points: [Point] = []
+        var imageLines = ""
+        var voxels: [SIMD3<Int64>: Point] = [:]        // first point per voxel, filled frame by frame
+        let lo = m.roi.map { SIMD3<Double>($0.min) }, hi = m.roi.map { SIMD3<Double>($0.max) }
+        // At video rate a room has 1,000 keyframes × 49k depth pixels; every 2nd pixel in u and v keeps the
+        // export under ~1.5M samples and the table small.
+        let pixelStride = m.keyframes.count > 300 ? 2 : 1
         for (n, kf) in m.keyframes.enumerated() {
             let rgb = try session.array(.keyframes, id: kf.id, name: "rgb").uint8()
             let (depth, conf) = try session.depth(.keyframes, id: kf.id)
@@ -44,10 +52,22 @@ public enum ColmapExport {
             let (R, t) = worldToCamera(arkitCameraToWorld: kf.arkitCameraToWorld)
             let q = qvec(R)
             imageLines += "\(n + 1) \(q.x) \(q.y) \(q.z) \(q.w) \(t.x) \(t.y) \(t.z) 1 \(name)\n\n"
-            points += lidarPoints(depth: depth, confidence: conf, depthWidth: m.depthWidth, depthHeight: m.depthHeight,
-                                  intrinsics: K, arkitCameraToWorld: kf.arkitCameraToWorld, rgb: rgb)
+            for p in lidarPoints(depth: depth, confidence: conf, depthWidth: m.depthWidth, depthHeight: m.depthHeight,
+                                 intrinsics: K, arkitCameraToWorld: kf.arkitCameraToWorld, rgb: rgb, pixelStride: pixelStride) {
+                if let lo, let hi, !(all(p.xyz .>= lo) && all(p.xyz .<= hi)) { continue }
+                let key = SIMD3<Int64>(Int64((p.xyz.x / voxel).rounded(.down)), Int64((p.xyz.y / voxel).rounded(.down)),
+                                       Int64((p.xyz.z / voxel).rounded(.down)))
+                if voxels[key] == nil { voxels[key] = p }
+            }
         }
-        if let roi = m.roi { points = cropAndDedupe(points, roi: roi, voxel: voxel) } else { points = dedupe(points, voxel: voxel) }
+        var points = voxels.sorted { a, b in
+            a.key.x != b.key.x ? a.key.x < b.key.x : a.key.y != b.key.y ? a.key.y < b.key.y : a.key.z < b.key.z
+        }.map(\.value)
+        voxels = [:]
+        if points.count > maxPoints {
+            let stride = Double(points.count) / Double(maxPoints)
+            points = (0..<maxPoints).map { points[Int(Double($0) * stride)] }
+        }
 
         // Pixel centres scale as (c + 0.5)·s − 0.5.
         let s = full ? Float(m.captureWidth) / Float(K.width) : 1
@@ -102,14 +122,14 @@ public enum ColmapExport {
 
     /// High-confidence LiDAR depth → world points, coloured from the nearest working-resolution pixel.
     static func lidarPoints(depth: [Float], confidence: [UInt8], depthWidth dw: Int, depthHeight dh: Int,
-                            intrinsics K: Intrinsics, arkitCameraToWorld v: [Float], rgb: [UInt8]) -> [Point] {
+                            intrinsics K: Intrinsics, arkitCameraToWorld v: [Float], rgb: [UInt8], pixelStride: Int = 1) -> [Point] {
         let c2w = cameraToWorld(v)
         let s = Double(dw) / Double(K.width)
         let fd = Double(K.f) * s, cxd = (Double(K.cx) + 0.5) * s - 0.5, cyd = (Double(K.cy) + 0.5) * s - 0.5
         var out: [Point] = []
         out.reserveCapacity(dw * dh)
-        for v in 0..<dh {
-            for u in 0..<dw {
+        for v in stride(from: 0, to: dh, by: pixelStride) {
+            for u in stride(from: 0, to: dw, by: pixelStride) {
                 let i = v * dw + u
                 let z = Double(depth[i])
                 guard confidence[i] >= 2, z.isFinite, z > 0 else { continue }
